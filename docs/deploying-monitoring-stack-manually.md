@@ -418,36 +418,6 @@ Check if notification is received:
 - Verify message appears in OCI Notifications topic
 - Confirm notification delivery to subscribed endpoints
 
-### 7.8 Troubleshooting OKE ONS Webhook
-
-**Webhook pod not starting**:
-```bash
-# Check events
-kubectl describe pod -n ${MONITORING_NAMESPACE} -l app.kubernetes.io/name=oke-ons-webhook
-
-# Check logs
-kubectl logs -n ${MONITORING_NAMESPACE} -l app.kubernetes.io/name=oke-ons-webhook
-```
-
-**Instance Principal authentication failing**:
-- Verify dynamic group includes your OKE worker nodes
-- Check IAM policies allow ONS topic access
-- Ensure nodes have correct instance principal configuration
-
-**Alerts not reaching ONS**:
-```bash
-# Check webhook received the alert
-kubectl logs -n ${MONITORING_NAMESPACE} -l app.kubernetes.io/name=oke-ons-webhook | grep "Received data"
-
-# Check if publishing to ONS succeeded
-kubectl logs -n ${MONITORING_NAMESPACE} -l app.kubernetes.io/name=oke-ons-webhook | grep "Message published"
-```
-
-**Grafana token creation failed**:
-- The webhook automatically creates a service account token in Grafana
-- Check logs for any authentication errors
-- Verify `GRAFANA_INITIAL_PASSWORD` is correct and base64-encoded
-
 ## Step 8: Access Grafana
 
 ### Option 1: Port Forward (Quick Access)
@@ -624,6 +594,36 @@ kubectl exec -n ${MONITORING_NAMESPACE} prometheus-kube-prometheus-stack-prometh
      repository: iad.ocir.io/hpc_limited_availability/oke-npd
      tag: v0.8.21-1
    ```
+
+### OKE ONS Webhook Issues
+
+**Webhook pod not starting**:
+```bash
+# Check events
+kubectl describe pod -n ${MONITORING_NAMESPACE} -l app.kubernetes.io/name=oke-ons-webhook
+
+# Check logs
+kubectl logs -n ${MONITORING_NAMESPACE} -l app.kubernetes.io/name=oke-ons-webhook
+```
+
+**Instance Principal authentication failing**:
+- Verify dynamic group includes your OKE worker nodes
+- Check IAM policies allow ONS topic access
+- Ensure nodes have correct instance principal configuration
+
+**Alerts not reaching ONS**:
+```bash
+# Check webhook received the alert
+kubectl logs -n ${MONITORING_NAMESPACE} -l app.kubernetes.io/name=oke-ons-webhook | grep "Received data"
+
+# Check if publishing to ONS succeeded
+kubectl logs -n ${MONITORING_NAMESPACE} -l app.kubernetes.io/name=oke-ons-webhook | grep "Message published"
+```
+
+**Grafana token creation failed**:
+- The webhook automatically creates a service account token in Grafana
+- Check logs for any authentication errors
+- Verify `GRAFANA_INITIAL_PASSWORD` is correct and base64-encoded
 
 ## Cleanup
 
