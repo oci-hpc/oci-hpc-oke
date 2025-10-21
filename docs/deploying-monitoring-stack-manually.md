@@ -6,7 +6,6 @@ This guide provides step-by-step instructions to deploy the same Prometheus and 
 
 - [Overview](#overview)
 - [Prerequisites](#prerequisites)
-- [Architecture](#architecture)
 - [Step 1: Prepare Your Environment](#step-1-prepare-your-environment)
 - [Step 2: Deploy kube-prometheus-stack](#step-2-deploy-kube-prometheus-stack)
 - [Step 3: Deploy NVIDIA DCGM Exporter](#step-3-deploy-nvidia-dcgm-exporter)
@@ -50,46 +49,6 @@ Optional:
 - OCI Notifications Service (ONS) Topic OCID (for alert notifications via OKE ONS Webhook)
 - Instance Principal authentication configured for OKE nodes (for OKE ONS Webhook)
 
-## Architecture
-
-The deployment consists of:
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Monitoring Namespace                         │
-│                                                                      │
-│  ┌──────────────────┐      ┌─────────────────┐                    │
-│  │   Prometheus     │◄─────┤  ServiceMonitors│                    │
-│  │   (30d retention)│      └─────────────────┘                    │
-│  │   Storage: 100Gi │                                              │
-│  └────────┬─────────┘                                              │
-│           │                                                         │
-│           ▼                                                         │
-│  ┌──────────────────┐      ┌─────────────────┐                    │
-│  │     Grafana      │◄─────┤   ConfigMaps    │                    │
-│  │  (Dashboards &   │      │  (Dashboards &  │                    │
-│  │     Alerts)      │      │     Alerts)     │                    │
-│  │  Storage: 100Gi  │      └─────────────────┘                    │
-│  └────────┬─────────┘                                              │
-│           │ Alerts                                                 │
-│           ▼                                                         │
-│  ┌──────────────────┐                                              │
-│  │  OKE ONS Webhook │─────────► OCI Notifications Service         │
-│  │   (Optional)     │           (Email, SMS, Slack, etc.)         │
-│  └──────────────────┘                                              │
-│                                                                     │
-│  Data Sources:                                                      │
-│  ┌──────────────────┐  ┌──────────────────┐                       │
-│  │  DCGM Exporter   │  │ Node Exporter    │                       │
-│  │  (GPU Metrics)   │  │ (Node Metrics)   │                       │
-│  └──────────────────┘  └──────────────────┘                       │
-│                                                                     │
-│  ┌──────────────────┐  ┌──────────────────┐                       │
-│  │ Node Problem     │  │ kube-state-      │                       │
-│  │ Detector         │  │ metrics          │                       │
-│  └──────────────────┘  └──────────────────┘                       │
-└─────────────────────────────────────────────────────────────────────┘
-```
 
 ## Step 1: Prepare Your Environment
 
