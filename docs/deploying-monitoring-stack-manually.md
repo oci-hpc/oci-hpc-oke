@@ -95,7 +95,7 @@ echo "Grafana admin password: ${GRAFANA_ADMIN_PASSWORD}"
 ### 2.2 Install kube-prometheus-stack
 
 ```bash
-helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
   --namespace ${MONITORING_NAMESPACE} \
   --values terraform/files/kube-prometheus/values.yaml \
   --set grafana.adminPassword="${GRAFANA_ADMIN_PASSWORD}" \
@@ -151,7 +151,7 @@ The values file is located at `terraform/files/nvidia-dcgm-exporter/oke-values.y
 ### 3.3 Install DCGM Exporter
 
 ```bash
-helm install dcgm-exporter terraform/files/nvidia-dcgm-exporter \
+helm upgrade --install dcgm-exporter terraform/files/nvidia-dcgm-exporter \
   --namespace ${MONITORING_NAMESPACE} \
   --values terraform/files/nvidia-dcgm-exporter/oke-values.yaml \
   --wait
@@ -194,7 +194,7 @@ The values file is located at `terraform/files/amd-device-metrics-exporter/value
 ### 3b.3 Install AMD Device Metrics Exporter
 
 ```bash
-helm install amd-device-metrics-exporter amd-gpu-operator/device-metrics-exporter \
+helm upgrade --install amd-device-metrics-exporter amd-gpu-operator/device-metrics-exporter \
   --namespace ${MONITORING_NAMESPACE} \
   --values terraform/files/amd-device-metrics-exporter/values.yaml \
   --wait
@@ -217,7 +217,7 @@ kubectl get servicemonitor -n ${MONITORING_NAMESPACE} device-metrics-exporter
 ### 4.1 Install Node Problem Detector
 
 ```bash
-helm install gpu-rdma-node-problem-detector oci://ghcr.io/deliveryhero/helm-charts/node-problem-detector --version 2.3.22 \
+helm upgrade --install gpu-rdma-node-problem-detector oci://ghcr.io/deliveryhero/helm-charts/node-problem-detector --version 2.3.22 \
   --namespace ${MONITORING_NAMESPACE} \
   --values terraform/files/node-problem-detector/values.yaml \
   --wait
@@ -387,7 +387,7 @@ export ONS_TOPIC_OCID="ocid1.onstopic.oc1.region.xxxxx"  # Replace with your act
 **Install the webhook:**
 
 ```bash
-helm install oke-ons-webhook terraform/files/oke-ons-webhook \
+helm upgrade --install oke-ons-webhook terraform/files/oke-ons-webhook \
   --namespace ${MONITORING_NAMESPACE} \
   --set deploy.env.ONS_TOPIC_OCID="${ONS_TOPIC_OCID}" \
   --set deploy.env.GRAFANA_INITIAL_PASSWORD="${GRAFANA_PASSWORD_B64}" \
@@ -455,6 +455,12 @@ To receive notifications, create subscriptions on your ONS topic:
 
 ### 7.7 Test the Integration
 
+Navigate to https://webhook.site/ and get your unique URL.
+
+Create an **HTTPS** subscription using the unique URL.
+
+Confirm the subscription opening the URL in the received webhook (e.g.: https://cell1.notification...). 
+
 Create a test alert in Grafana:
 
 ```bash
@@ -492,7 +498,63 @@ kubectl get secret -n ${MONITORING_NAMESPACE} kube-prometheus-stack-grafana \
 
 ### Option 2: Ingress with TLS
 
-# TO DO
+1. Enable the CertManager OKE Cluster Addon
+
+   Follow the instructions [here](https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/install-add-on.htm) to enable the CertManager Addon on an existing cluster.
+
+   Wait until the addon status is `Ready`.
+
+2. Install the Nginx Ingress Controller
+   
+   ```bash
+   helm upgrade --install ingress-nginx ingress-nginx \
+      --repo https://kubernetes.github.io/ingress-nginx \
+      --namespace ingress-nginx --create-namespace
+   ```
+
+   **Note**: 
+   - If you want to customize the Ingress Controller LoadBalancer attributes, please take a look at the file: terraform/files/nginx-ingress/values.yaml.tpl
+
+   - All supported annotations can be found in [our documentation](https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengcreatingloadbalancer_topic-Summaryofannotations.htm).
+
+3. Create a ClusterIssuer for Let's Encrypt.
+
+   ```bash
+   kubectl apply -f terraform/files/cert-manager/cluster-issuer.yaml
+   ```
+
+4. Get the public IP address of the LoadBalancer associated with the Nginx Ingress Controller.
+
+   ```bash
+   export INGRESS_IP=$(kubectl get svc -A -l app.kubernetes.io/name=ingress-nginx  -o json | jq -r '.items[] | select(.spec.type == "LoadBalancer") | .status.loadBalancer.ingress[].ip')
+   ```
+
+5. Upgrade the Grafana Deployment to use Ingress.
+
+   ```bash
+   helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+   --namespace ${MONITORING_NAMESPACE} \
+   --reuse-values \
+   --set grafana.ingress.enabled=true \
+   --set grafana.ingress.ingressClassName=nginx \
+   --set grafana.ingress.annotations.'cert-manager\.io\/cluster-issuer'=le-clusterissuer \
+   --set grafana.ingress.hosts[0]=grafana.${INGRESS_IP}.sslip.io \
+   --set grafana.ingress.tls[0].hosts[0]=grafana.${INGRESS_IP}.sslip.io \
+   --set grafana.ingress.tls[0].secretName=grafana-tls \
+   --wait
+   ```
+
+6. Confirm the ingress resource was created.
+
+   ```bash
+   kubectl get ingress -n ${MONITORING_NAMESPACE} -l app.kubernetes.io/instance=kube-prometheus-stack
+
+   # Sample output
+   # NAME                            CLASS   HOSTS                              ADDRESS           PORTS     AGE
+   # kube-prometheus-stack-grafana   nginx   grafana.${INGRESS_IP}.sslip.io     ${INGRESS_IP}     80, 443   5m28s
+   ```
+
+7. Access Grafana at `https://grafana.${INGRESS_IP}.sslip.io`
 
 ## Step 9: Verify the Deployment
 
@@ -732,9 +794,19 @@ helm uninstall oke-ons-webhook -n ${MONITORING_NAMESPACE}
 # Uninstall kube-prometheus-stack
 helm uninstall kube-prometheus-stack -n ${MONITORING_NAMESPACE}
 
+# Delete Nginx Ingress Controller (if deployed)
+helm uninstall ingress-nginx -n ingress-nginx
+
+# Delete the Cluster Issuer
+kubectl delete -f terraform/files/cert-manager/cluster-issuer.yaml
+
+# Delete cert-manager (oci cli is required)
+oci ce cluster disable-addon --addon-name CertManager --cluster-id {oke-cluster-ocid} --is-remove-existing-add-on true --force
+
 # Delete PVCs (optional, this will delete all stored metrics and dashboards)
 kubectl delete pvc -n ${MONITORING_NAMESPACE} --all
 
 # Delete namespace
 kubectl delete namespace ${MONITORING_NAMESPACE}
+
 ```
