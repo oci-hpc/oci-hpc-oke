@@ -9,11 +9,12 @@ Active health checks provide automated, periodic validation of GPU & RDMA functi
 
 ### Available Health Check Types
 
-Three types of active health checks are available:
+Four types of active health checks are available:
 
-1. **NCCL Tests** - Multi-node GPU communication tests using NVIDIA NCCL
-2. **GPU Fryer** - Single-node GPU stress testing
-3. **DCGM Diagnostics** - Host-level GPU diagnostics using NVIDIA DCGM
+1. **NCCL Tests** - Multi-node GPU communication tests using NVIDIA NCCL (NVIDIA GPUs)
+2. **RCCL Tests** - Multi-node GPU communication tests using AMD RCCL (AMD GPUs)
+3. **GPU Fryer** - Single-node GPU stress testing (NVIDIA GPUs)
+4. **DCGM Diagnostics** - Host-level GPU diagnostics using NVIDIA DCGM (NVIDIA GPUs)
 
 ### How It Works
 
@@ -51,6 +52,7 @@ Each health check applies two labels to tested nodes:
 | Health Check | Pass/Fail Label | Timestamp Label |
 |--------------|----------------|-----------------|
 | NCCL Tests | `oke.oraclecloud.com/active-health-checks-nccl-tests` | `oke.oraclecloud.com/active-health-checks-nccl-tests-last-run` |
+| RCCL Tests | `oke.oraclecloud.com/active-health-checks-rccl-tests` | `oke.oraclecloud.com/active-health-checks-rccl-tests-last-run` |
 | GPU Fryer | `oke.oraclecloud.com/active-health-checks-gpu-fryer` | `oke.oraclecloud.com/active-health-checks-gpu-fryer-last-run` |
 | DCGM Diagnostics | `oke.oraclecloud.com/active-health-checks-dcgm-diag` | `oke.oraclecloud.com/active-health-checks-dcgm-diag-last-run` |
 
@@ -60,7 +62,7 @@ Label values:
 
 ## RBAC Permissions
 
-All three health checks use the same RBAC configuration:
+All four health checks use the same RBAC configuration:
 
 - **ServiceAccount**: `active-health-checks-runner` (in `monitoring` namespace)
 - **ClusterRole**: `active-health-checks-runner-role`
@@ -84,12 +86,18 @@ kubectl apply --server-side -f https://raw.githubusercontent.com/kubeflow/mpi-op
 
 ### Step 2: Deploy Active Health Checks
 
-Deploy all three health check CronJobs:
+Deploy all health check CronJobs:
 
+**For NVIDIA GPU clusters:**
 ```bash
 kubectl apply -f https://raw.githubusercontent.com/oracle-quickstart/oci-hpc-oke/refs/heads/main/manifests/active-health-checks/active-health-checks-nccl-tests.yaml
 kubectl apply -f https://raw.githubusercontent.com/oracle-quickstart/oci-hpc-oke/refs/heads/main/manifests/active-health-checks/active-health-checks-gpu-fryer.yaml
 kubectl apply -f https://raw.githubusercontent.com/oracle-quickstart/oci-hpc-oke/refs/heads/main/manifests/active-health-checks/active-health-checks-dcgm-diag.yaml
+```
+
+**For AMD GPU clusters:**
+```bash
+kubectl apply -f https://raw.githubusercontent.com/oracle-quickstart/oci-hpc-oke/refs/heads/main/manifests/active-health-checks/active-health-checks-rccl-tests.yaml
 ```
 
 ### Step 3: Verify Deployment
@@ -100,7 +108,7 @@ Check that the CronJobs have been created:
 kubectl get cronjobs -n monitoring
 ```
 
-**Example output:**
+**Example output (NVIDIA GPU clusters):**
 
 ```
 NAME                                       SCHEDULE      SUSPEND   ACTIVE   LAST SCHEDULE   AGE
@@ -109,17 +117,26 @@ active-health-checks-gpu-fryer-applier     0 * * * *     False     0        <non
 active-health-checks-nccl-tests-applier    0 * * * *     False     0        <none>          10s
 ```
 
+**Example output (AMD GPU clusters):**
+
+```
+NAME                                       SCHEDULE      SUSPEND   ACTIVE   LAST SCHEDULE   AGE
+active-health-checks-rccl-tests-applier    0 * * * *     False     0        <none>          10s
+```
+
 ## Node Selection Logic
 
 All health checks follow this selection process:
 
-1. **Find GPU Nodes**: Query nodes with `nvidia.com/gpu=true` label
+1. **Find GPU Nodes**: Query nodes with appropriate GPU label
+   - NVIDIA tests: `nvidia.com/gpu=true` label
+   - AMD tests: `amd.com/gpu=true` label
 2. **Check Idle Status**: Calculate GPU usage from pod requests
    - Only nodes with 0 GPU allocation are considered
 3. **Check Last Run**: Parse `*-last-run` timestamp label
    - Skip nodes tested today (same UTC date)
 4. **Select Nodes**:
-   - NCCL: Pick 2+ nodes of same shape
+   - NCCL/RCCL: Pick 2+ nodes of same shape
    - GPU Fryer: Pick 1 node
    - DCGM: Pick 1 node
 
@@ -140,8 +157,14 @@ kubectl get node <node-name> --show-labels | grep active-health-checks
 
 View all nodes with their health check labels:
 
+**For NVIDIA GPU nodes:**
 ```bash
 kubectl get nodes -o custom-columns=NAME:.metadata.name,NCCL:.metadata.labels.oke\.oraclecloud\.com/active-health-checks-nccl-tests,GPU_FRYER:.metadata.labels.oke\.oraclecloud\.com/active-health-checks-gpu-fryer,DCGM:.metadata.labels.oke\.oraclecloud\.com/active-health-checks-dcgm-diag
+```
+
+**For AMD GPU nodes:**
+```bash
+kubectl get nodes -o custom-columns=NAME:.metadata.name,RCCL:.metadata.labels.oke\.oraclecloud\.com/active-health-checks-rccl-tests
 ```
 
 ### Identify Failed Nodes
@@ -149,9 +172,13 @@ kubectl get nodes -o custom-columns=NAME:.metadata.name,NCCL:.metadata.labels.ok
 List nodes that have failed any health check:
 
 ```bash
+# NVIDIA GPU nodes
 kubectl get nodes -l oke.oraclecloud.com/active-health-checks-nccl-tests=fail -o wide
 kubectl get nodes -l oke.oraclecloud.com/active-health-checks-gpu-fryer=fail -o wide
 kubectl get nodes -l oke.oraclecloud.com/active-health-checks-dcgm-diag=fail -o wide
+
+# AMD GPU nodes
+kubectl get nodes -l oke.oraclecloud.com/active-health-checks-rccl-tests=fail -o wide
 ```
 
 ### View Health Check Job Logs
@@ -172,15 +199,23 @@ To manually trigger a health check outside the regular schedule:
 
 ```bash
 # Create a one-off job from the CronJob
+# NVIDIA GPU tests
 kubectl create job -n monitoring manual-nccl-test --from=cronjob/active-health-checks-nccl-tests-applier
 kubectl create job -n monitoring manual-fryer-test --from=cronjob/active-health-checks-gpu-fryer-applier
 kubectl create job -n monitoring manual-dcgm-test --from=cronjob/active-health-checks-dcgm-diag-applier
+
+# AMD GPU tests
+kubectl create job -n monitoring manual-rccl-test --from=cronjob/active-health-checks-rccl-tests-applier
 ```
 
 To run a test immediately on a specific node, you can temporarily modify the node labels to remove the last-run timestamp:
 
 ```bash
+# For NVIDIA nodes
 kubectl label node <node-name> oke.oraclecloud.com/active-health-checks-nccl-tests-last-run-
+
+# For AMD nodes
+kubectl label node <node-name> oke.oraclecloud.com/active-health-checks-rccl-tests-last-run-
 ```
 
 The next CronJob execution will then select this node for testing.
@@ -202,6 +237,7 @@ By default, health checks run every hour (`0 * * * *`). To modify the schedule:
 
 Each health check manifest can be customized with different parameters:
 - **NCCL Tests**: Number of nodes, GPU count, NCCL parameters
+- **RCCL Tests**: Number of nodes, GPU count, RCCL parameters
 - **GPU Fryer**: Stress duration, temperature thresholds
 - **DCGM Diagnostics**: Diagnostic level, specific tests to run
 
@@ -223,10 +259,16 @@ kubectl patch cronjob active-health-checks-nccl-tests-applier -n monitoring -p '
 
 To remove active health checks:
 
+**For NVIDIA GPU clusters:**
 ```bash
 kubectl delete -f https://raw.githubusercontent.com/oracle-quickstart/oci-hpc-oke/refs/heads/main/manifests/active-health-checks/active-health-checks-nccl-tests.yaml
 kubectl delete -f https://raw.githubusercontent.com/oracle-quickstart/oci-hpc-oke/refs/heads/main/manifests/active-health-checks/active-health-checks-gpu-fryer.yaml
 kubectl delete -f https://raw.githubusercontent.com/oracle-quickstart/oci-hpc-oke/refs/heads/main/manifests/active-health-checks/active-health-checks-dcgm-diag.yaml
+```
+
+**For AMD GPU clusters:**
+```bash
+kubectl delete -f https://raw.githubusercontent.com/oracle-quickstart/oci-hpc-oke/refs/heads/main/manifests/active-health-checks/active-health-checks-rccl-tests.yaml
 ```
 
 > [!NOTE]
