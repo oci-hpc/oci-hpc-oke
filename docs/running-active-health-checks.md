@@ -9,12 +9,13 @@ Active health checks provide automated, periodic validation of GPU & RDMA functi
 
 ### Available Health Check Types
 
-Four types of active health checks are available:
+Five types of active health checks are available:
 
 1. **NCCL Tests** - Multi-node GPU communication tests using NVIDIA NCCL (NVIDIA GPUs)
 2. **RCCL Tests** - Multi-node GPU communication tests using AMD RCCL (AMD GPUs)
 3. **GPU Fryer** - Single-node GPU stress testing (NVIDIA GPUs)
-4. **DCGM Diagnostics** - Host-level GPU diagnostics using NVIDIA DCGM (NVIDIA GPUs)
+4. **RVS** - Single-node GPU validation using ROCm Validation Suite (AMD GPUs)
+5. **DCGM Diagnostics** - Host-level GPU diagnostics using NVIDIA DCGM (NVIDIA GPUs)
 
 ### How It Works
 
@@ -28,8 +29,8 @@ Each health check runs as a CronJob that:
 
 - OKE cluster with GPU nodes
 - kubectl access with cluster-admin privileges
-- Kueue installed (for NCCL tests)
-- MPI Operator installed (for NCCL tests)
+- Kueue installed
+- MPI Operator installed (for NCCL and RCCL tests)
 - Monitoring namespace (or permission to create it)
 
 ## Architecture
@@ -54,6 +55,7 @@ Each health check applies two labels to tested nodes:
 | NCCL Tests | `oke.oraclecloud.com/active-health-checks-nccl-tests` | `oke.oraclecloud.com/active-health-checks-nccl-tests-last-run` |
 | RCCL Tests | `oke.oraclecloud.com/active-health-checks-rccl-tests` | `oke.oraclecloud.com/active-health-checks-rccl-tests-last-run` |
 | GPU Fryer | `oke.oraclecloud.com/active-health-checks-gpu-fryer` | `oke.oraclecloud.com/active-health-checks-gpu-fryer-last-run` |
+| RVS | `oke.oraclecloud.com/active-health-checks-rvs` | `oke.oraclecloud.com/active-health-checks-rvs-last-run` |
 | DCGM Diagnostics | `oke.oraclecloud.com/active-health-checks-dcgm-diag` | `oke.oraclecloud.com/active-health-checks-dcgm-diag-last-run` |
 
 Label values:
@@ -62,7 +64,7 @@ Label values:
 
 ## RBAC Permissions
 
-All four health checks use the same RBAC configuration:
+All five health checks use the same RBAC configuration:
 
 - **ServiceAccount**: `active-health-checks-runner` (in `monitoring` namespace)
 - **ClusterRole**: `active-health-checks-runner-role`
@@ -79,7 +81,7 @@ The RBAC permissions allow the health check jobs to:
 Install Kueue and MPI Operator (required for NCCL tests):
 
 ```bash
-helm install kueue oci://registry.k8s.io/kueue/charts/kueue --version="0.14.1" --create-namespace --namespace=kueue-system
+helm install kueue oci://registry.k8s.io/kueue/charts/kueue --version="0.14.2" --create-namespace --namespace=kueue-system
 
 kubectl apply --server-side -f https://raw.githubusercontent.com/kubeflow/mpi-operator/v0.6.0/deploy/v2beta1/mpi-operator.yaml
 ```
@@ -98,6 +100,7 @@ kubectl apply -f https://raw.githubusercontent.com/oracle-quickstart/oci-hpc-oke
 **For AMD GPU clusters:**
 ```bash
 kubectl apply -f https://raw.githubusercontent.com/oracle-quickstart/oci-hpc-oke/refs/heads/main/manifests/active-health-checks/active-health-checks-rccl-tests.yaml
+kubectl apply -f https://raw.githubusercontent.com/oracle-quickstart/oci-hpc-oke/refs/heads/main/manifests/active-health-checks/active-health-checks-rvs.yaml
 ```
 
 ### Step 3: Verify Deployment
@@ -122,6 +125,7 @@ active-health-checks-nccl-tests-applier    0 * * * *     False     0        <non
 ```
 NAME                                       SCHEDULE      SUSPEND   ACTIVE   LAST SCHEDULE   AGE
 active-health-checks-rccl-tests-applier    0 * * * *     False     0        <none>          10s
+active-health-checks-rvs-applier           0 * * * *     False     0        <none>          10s
 ```
 
 ## Node Selection Logic
@@ -138,6 +142,7 @@ All health checks follow this selection process:
 4. **Select Nodes**:
    - NCCL/RCCL: Pick 2+ nodes of same shape
    - GPU Fryer: Pick 1 node
+   - RVS: Pick 1 node
    - DCGM: Pick 1 node
 
 This ensures:
@@ -164,7 +169,7 @@ kubectl get nodes -o custom-columns=NAME:.metadata.name,NCCL:.metadata.labels.ok
 
 **For AMD GPU nodes:**
 ```bash
-kubectl get nodes -o custom-columns=NAME:.metadata.name,RCCL:.metadata.labels.oke\.oraclecloud\.com/active-health-checks-rccl-tests
+kubectl get nodes -o custom-columns=NAME:.metadata.name,RCCL:.metadata.labels.oke\.oraclecloud\.com/active-health-checks-rccl-tests,RVS:.metadata.labels.oke\.oraclecloud\.com/active-health-checks-rvs
 ```
 
 ### Identify Failed Nodes
@@ -179,6 +184,7 @@ kubectl get nodes -l oke.oraclecloud.com/active-health-checks-dcgm-diag=fail -o 
 
 # AMD GPU nodes
 kubectl get nodes -l oke.oraclecloud.com/active-health-checks-rccl-tests=fail -o wide
+kubectl get nodes -l oke.oraclecloud.com/active-health-checks-rvs=fail -o wide
 ```
 
 ### View Health Check Job Logs
@@ -206,6 +212,7 @@ kubectl create job -n monitoring manual-dcgm-test --from=cronjob/active-health-c
 
 # AMD GPU tests
 kubectl create job -n monitoring manual-rccl-test --from=cronjob/active-health-checks-rccl-tests-applier
+kubectl create job -n monitoring manual-rvs-test --from=cronjob/active-health-checks-rvs-applier
 ```
 
 To run a test immediately on a specific node, you can temporarily modify the node labels to remove the last-run timestamp:
@@ -216,6 +223,7 @@ kubectl label node <node-name> oke.oraclecloud.com/active-health-checks-nccl-tes
 
 # For AMD nodes
 kubectl label node <node-name> oke.oraclecloud.com/active-health-checks-rccl-tests-last-run-
+kubectl label node <node-name> oke.oraclecloud.com/active-health-checks-rvs-last-run-
 ```
 
 The next CronJob execution will then select this node for testing.
@@ -239,6 +247,7 @@ Each health check manifest can be customized with different parameters:
 - **NCCL Tests**: Number of nodes, GPU count, NCCL parameters
 - **RCCL Tests**: Number of nodes, GPU count, RCCL parameters
 - **GPU Fryer**: Stress duration, temperature thresholds
+- **RVS**: Test recipe, iterations, timeout, validation tests
 - **DCGM Diagnostics**: Diagnostic level, specific tests to run
 
 Download and modify the manifests locally before applying them for custom configurations.
@@ -269,6 +278,7 @@ kubectl delete -f https://raw.githubusercontent.com/oracle-quickstart/oci-hpc-ok
 **For AMD GPU clusters:**
 ```bash
 kubectl delete -f https://raw.githubusercontent.com/oracle-quickstart/oci-hpc-oke/refs/heads/main/manifests/active-health-checks/active-health-checks-rccl-tests.yaml
+kubectl delete -f https://raw.githubusercontent.com/oracle-quickstart/oci-hpc-oke/refs/heads/main/manifests/active-health-checks/active-health-checks-rvs.yaml
 ```
 
 > [!NOTE]
