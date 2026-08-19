@@ -1,0 +1,18 @@
+apiVersion: v2
+name: oci-quickcache
+description: Host-local, cluster-wide read-through cache for S3 GetObject workloads on OKE
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/oracle-quickstart/oci-hpc-oke
+sources:
+  - https://github.com/oracle-quickstart/oci-hpc-oke
+  - https://github.com/oci-hpc/oci-hpc-clusternetwork-dev
+keywords:
+  - oke
+  - s3
+  - cache
+  - gpu
+  - nvme
+maintainers:
+  - name: OCI HPC

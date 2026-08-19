@@ -1,0 +1,107 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: quickcache-boto3-test
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: quickcache-boto3-test
+    spec:
+      restartPolicy: Never
+      securityContext:
+        supplementalGroups: [1500]
+      nodeSelector:
+        oci-hpc-oke.oracle.com/quickcache-ready: "true"
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: test
+          image: ghcr.io/astral-sh/uv:0.7.12-python3.12-bookworm-slim
+          command: ["uv", "run", "--with", "boto3", "python", "-c"]
+          args:
+            - |
+              import os
+              import boto3
+              from botocore.config import Config
+
+              client = boto3.client(
+                  "s3",
+                  endpoint_url=os.environ["S3_ENDPOINT_URL"],
+                  region_name=os.environ["AWS_DEFAULT_REGION"],
+                  config=Config(
+                      signature_version="s3v4",
+                      s3={"addressing_style": "path"},
+                      request_checksum_calculation="when_required",
+                      response_checksum_validation="when_required",
+                  ),
+              )
+              request = {"Bucket": os.environ["S3_BUCKET"], "Key": os.environ["S3_KEY"]}
+              first = client.get_object(**request)
+              first_cached = getattr(first["Body"], "from_cache", False)
+              first_data = first["Body"].read()
+              first["Body"].close()
+              second = client.get_object(**request)
+              second_cached = getattr(second["Body"], "from_cache", False)
+              second_data = second["Body"].read()
+              second["Body"].close()
+              chunked = client.get_object(**request)
+              chunked_cached = getattr(chunked["Body"], "from_cache", False)
+              chunked_data = b"".join(chunked["Body"].iter_chunks(chunk_size=1024 * 1024))
+              chunked["Body"].close()
+              if not first_data:
+                  raise AssertionError("QuickCache smoke test requires a non-empty object")
+              range_end = min(15, len(first_data) - 1)
+              ranged = client.get_object(**request, Range=f"bytes=0-{range_end}")
+              ranged_cached = getattr(ranged["Body"], "from_cache", False)
+              ranged_data = ranged["Body"].read()
+              ranged["Body"].close()
+              print(f"first_read_from_cache={first_cached}")
+              print(f"second_read_from_cache={second_cached}")
+              print(f"chunked_read_from_cache={chunked_cached}")
+              print(f"range_read_from_cache={ranged_cached}")
+              print(f"content_matches={first_data == second_data}")
+              print(f"chunked_content_matches={first_data == chunked_data}")
+              print(f"range_content_matches={first_data[:range_end + 1] == ranged_data}")
+              assert not first_cached
+              assert second_cached and chunked_cached and ranged_cached
+              assert first_data == second_data == chunked_data
+              assert first_data[:range_end + 1] == ranged_data
+          envFrom:
+            - secretRef:
+                name: quickcache-s3
+          env:
+            - name: PYTHONPATH
+              value: /opt/ociqc
+            - name: OCI_QC_ENV_PATH
+              value: /etc/ociqc/env.json
+          volumeMounts:
+            - name: quickcache-runtime
+              mountPath: /opt/ociqc
+              readOnly: true
+            - name: quickcache-config
+              mountPath: /etc/ociqc
+              readOnly: true
+            - name: quickcache-peers
+              mountPath: /var/lib/ociqc/mounts
+              mountPropagation: HostToContainer
+            - name: quickcache-logs
+              mountPath: /var/log/ociqc
+      volumes:
+        - name: quickcache-runtime
+          hostPath:
+            path: /var/lib/ociqc/runtime
+            type: Directory
+        - name: quickcache-config
+          hostPath:
+            path: /var/lib/ociqc/config
+            type: Directory
+        - name: quickcache-peers
+          hostPath:
+            path: /var/lib/ociqc/mounts
+            type: Directory
+        - name: quickcache-logs
+          hostPath:
+            path: /var/lib/ociqc/logs
+            type: Directory

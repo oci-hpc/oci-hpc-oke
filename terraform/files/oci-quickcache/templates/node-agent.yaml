@@ -1,0 +1,241 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "oci-quickcache.fullname" . }}-node-agent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "oci-quickcache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node-agent
+spec:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: "25%"
+  selector:
+    matchLabels:
+      {{- include "oci-quickcache.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: node-agent
+  template:
+    metadata:
+      labels:
+        {{- include "oci-quickcache.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: node-agent
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/runtime: {{ include (print $.Template.BasePath "/runtime-configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "oci-quickcache.fullname" . }}
+      hostPID: true
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      priorityClassName: {{ .Values.nodeAgent.priorityClassName }}
+      # The agent unmounts a full peer mesh and removes the NFS export during
+      # shutdown. Allow its bounded 120-second teardown to finish.
+      terminationGracePeriodSeconds: 180
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      nodeSelector:
+        {{ .Values.quickcacheLabel }}: "true"
+        {{- with .Values.nodeAgent.nodeSelector }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeAgent.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: runtime
+          configMap:
+            name: {{ include "oci-quickcache.fullname" . }}-runtime
+            defaultMode: 0755
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory
+        - name: host-nvme
+          hostPath:
+            path: /mnt/nvme
+            type: DirectoryOrCreate
+        - name: host-logs
+          hostPath:
+            path: {{ .Values.cache.hostLogRoot | quote }}
+            type: DirectoryOrCreate
+        - name: uv-cache
+          emptyDir: {}
+        - name: migration-uv-cache
+          emptyDir: {}
+        - name: health
+          emptyDir: {}
+      containers:
+        - name: node-agent
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["uv", "run", "/runtime/node_agent.py"]
+          env:
+            - name: UV_CACHE_DIR
+              value: /tmp/uv-cache
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: STATE_CONFIGMAP_NAME
+              value: {{ .Values.stateConfigMapName | quote }}
+            - name: QUICKCACHE_READY_LABEL
+              value: {{ .Values.quickcacheReadyLabel | quote }}
+            - name: HEARTBEAT_ANNOTATION
+              value: {{ .Values.heartbeatAnnotation | quote }}
+            - name: RECONCILE_INTERVAL
+              value: {{ .Values.nodeAgent.reconcileInterval | quote }}
+            - name: PEER_PROBE_TIMEOUT
+              value: {{ .Values.nodeAgent.peerProbeTimeout | quote }}
+            - name: NODE_MODE
+              value: server
+            - name: LOCAL_CACHE_PATH
+              value: {{ .Values.cache.localPath | quote }}
+            - name: HOST_MOUNT_ROOT
+              value: {{ .Values.cache.hostMountRoot | quote }}
+            - name: HOST_RUNTIME_ROOT
+              value: {{ .Values.cache.hostRuntimeRoot | quote }}
+            - name: HOST_CONFIG_ROOT
+              value: {{ .Values.cache.hostConfigRoot | quote }}
+            - name: HOST_LOG_ROOT
+              value: {{ .Values.cache.hostLogRoot | quote }}
+            - name: CACHE_DIR_NAME
+              value: {{ .Values.cache.cacheDirName | quote }}
+            - name: ACCESS_MODE
+              value: {{ .Values.cache.access.mode | quote }}
+            - name: SHARED_GID
+              value: {{ .Values.cache.access.sharedGid | quote }}
+            - name: NFS_OPTIONS
+              value: {{ .Values.cache.nfsOptions | quote }}
+            - name: CACHE_MAX_AGE
+              value: {{ printf "%d" (int64 .Values.cache.maxAgeSeconds) | quote }}
+            - name: MAP_RELOAD_INTERVAL
+              value: {{ .Values.cache.mapReloadInterval | quote }}
+            - name: CACHE_RANGE_GETS
+              value: {{ .Values.cache.cacheRangeGets | quote }}
+          volumeMounts:
+            - name: runtime
+              mountPath: /runtime
+              readOnly: true
+            - name: host-root
+              mountPath: /host
+              mountPropagation: Bidirectional
+            - name: uv-cache
+              mountPath: /tmp/uv-cache
+            - name: health
+              mountPath: /tmp/health
+          livenessProbe:
+            exec:
+              command: ["test", "-f", "/tmp/health/alive"]
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["test", "-f", "/tmp/health/ready"]
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.nodeAgent.resources | nindent 12 }}
+          securityContext:
+            privileged: true
+        {{- if ne .Values.controller.rebalanceMode "immediate" }}
+        - name: migration-agent
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["uv", "run", "/runtime/migration_agent.py"]
+          env:
+            - name: UV_CACHE_DIR
+              value: /tmp/uv-cache
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: STATE_CONFIGMAP_NAME
+              value: {{ .Values.stateConfigMapName | quote }}
+            - name: MIGRATION_STATUS_ANNOTATION
+              value: {{ .Values.controller.migrationStatusAnnotation | quote }}
+            - name: RECONCILE_INTERVAL
+              value: {{ .Values.nodeAgent.reconcileInterval | quote }}
+            - name: MIGRATION_TIMEOUT
+              value: {{ .Values.migrationAgent.timeout | quote }}
+            - name: LOCAL_CACHE_PATH
+              value: {{ .Values.cache.localPath | quote }}
+            - name: HOST_RUNTIME_ROOT
+              value: {{ .Values.cache.hostRuntimeRoot | quote }}
+            - name: HOST_CONFIG_ROOT
+              value: {{ .Values.cache.hostConfigRoot | quote }}
+            - name: CACHE_DIR_NAME
+              value: {{ .Values.cache.cacheDirName | quote }}
+            - name: ACCESS_MODE
+              value: {{ .Values.cache.access.mode | quote }}
+            - name: SHARED_GID
+              value: {{ .Values.cache.access.sharedGid | quote }}
+          volumeMounts:
+            - name: runtime
+              mountPath: /runtime
+              readOnly: true
+            - name: host-root
+              mountPath: /host
+              mountPropagation: Bidirectional
+            - name: migration-uv-cache
+              mountPath: /tmp/uv-cache
+          resources:
+            {{- toYaml .Values.migrationAgent.resources | nindent 12 }}
+          securityContext:
+            privileged: true
+        {{- end }}
+        - name: cleanup
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python3", "/runtime/cleanup.py"]
+          env:
+            - name: OCI_QC_CACHE_DIR_LOCAL
+              value: {{ .Values.cache.localPath | quote }}
+            - name: OCI_QC_CACHE_DIR_NAME
+              value: {{ .Values.cache.cacheDirName | quote }}
+            - name: OCI_QC_CLEAN_INTERVAL
+              value: {{ .Values.cache.cleanup.interval | quote }}
+            - name: OCI_QC_CLEAN_MAX
+              value: {{ .Values.cache.cleanup.highWatermark | quote }}
+            - name: OCI_QC_CLEAN_TARGET
+              value: {{ .Values.cache.cleanup.targetWatermark | quote }}
+            - name: OCI_QC_MAX_CACHE_FILES
+              value: {{ printf "%d" (int64 .Values.cache.cleanup.maxFiles) | quote }}
+            - name: OCI_QC_LOG_DIR
+              value: /var/log/ociqc
+          volumeMounts:
+            - name: runtime
+              mountPath: /runtime
+              readOnly: true
+            - name: host-nvme
+              mountPath: /mnt/nvme
+            - name: host-logs
+              mountPath: /var/log/ociqc
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

@@ -1,0 +1,28 @@
+QuickCache is installed in {{ .Release.Namespace }}.
+
+Verify the controller and node agents:
+  kubectl get deploy,ds -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
+
+Verify discovered peers and the shard map:
+  kubectl get configmap -n {{ .Release.Namespace }} {{ .Values.stateConfigMapName }} -o jsonpath='{.data.peers\.json}'
+  kubectl get configmap -n {{ .Release.Namespace }} {{ .Values.stateConfigMapName }} -o jsonpath='{.data.shard_map\.json}'
+  kubectl get configmap -n {{ .Release.Namespace }} {{ .Values.stateConfigMapName }} -o jsonpath='{.data.rebalance\.json}'
+
+Shard rebalance mode is {{ .Values.controller.rebalanceMode }}.
+{{- if eq .Values.controller.rebalanceMode "manual" }}
+Approve a pending plan using its rebalance.json approvalToken:
+  kubectl annotate configmap -n {{ .Release.Namespace }} {{ .Values.stateConfigMapName }} \
+    {{ .Values.controller.rebalanceApprovalAnnotation }}=APPROVAL_TOKEN --overwrite
+{{- end }}
+
+Only nodes labeled {{ .Values.quickcacheLabel }}=true run the node agent.
+{{- if .Values.clientAgent.enabled }}
+Dedicated client nodes labeled {{ .Values.quickcacheClientLabel }}=true run the client agent.
+Workloads on those nodes select {{ .Values.quickcacheClientReadyLabel }}=true.
+{{- end }}
+
+Workloads should mount {{ .Values.cache.hostLogRoot }} at /var/log/ociqc to
+persist cache hit/miss/error audit files across pod replacement.
+{{- if eq .Values.cache.access.mode "sharedGroup" }}
+Workload pods must use supplementalGroups: [{{ .Values.cache.access.sharedGid }}].
+{{- end }}

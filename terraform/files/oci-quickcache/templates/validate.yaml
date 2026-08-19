@@ -1,0 +1,113 @@
+{{- $localPath := clean .Values.cache.localPath -}}
+{{- if not (regexMatch `^/mnt/nvme/[^/].*` $localPath) -}}
+{{- fail "cache.localPath must be an absolute child of /mnt/nvme" -}}
+{{- end -}}
+{{- if regexMatch `(^|/)\.\.(/|$)` .Values.cache.localPath -}}
+{{- fail "cache.localPath must not contain parent-directory traversal" -}}
+{{- end -}}
+
+{{- $mountRoot := clean .Values.cache.hostMountRoot -}}
+{{- $runtimeRoot := clean .Values.cache.hostRuntimeRoot -}}
+{{- $configRoot := clean .Values.cache.hostConfigRoot -}}
+{{- $logRoot := clean .Values.cache.hostLogRoot -}}
+{{- range $name, $path := dict "cache.hostMountRoot" $mountRoot "cache.hostRuntimeRoot" $runtimeRoot "cache.hostConfigRoot" $configRoot "cache.hostLogRoot" $logRoot -}}
+{{- if not (regexMatch `^/var/lib/ociqc/[^/].*` $path) -}}
+{{- fail (printf "%s must be an absolute child of /var/lib/ociqc" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- range $name, $path := dict "cache.hostMountRoot" .Values.cache.hostMountRoot "cache.hostRuntimeRoot" .Values.cache.hostRuntimeRoot "cache.hostConfigRoot" .Values.cache.hostConfigRoot "cache.hostLogRoot" .Values.cache.hostLogRoot -}}
+{{- if regexMatch `(^|/)\.\.(/|$)` $path -}}
+{{- fail (printf "%s must not contain parent-directory traversal" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- if or
+      (eq $mountRoot $runtimeRoot)
+      (eq $mountRoot $configRoot)
+      (eq $runtimeRoot $configRoot)
+      (eq $mountRoot $logRoot)
+      (eq $runtimeRoot $logRoot)
+      (eq $configRoot $logRoot)
+      (hasPrefix (printf "%s/" $mountRoot) $runtimeRoot)
+      (hasPrefix (printf "%s/" $runtimeRoot) $mountRoot)
+      (hasPrefix (printf "%s/" $mountRoot) $configRoot)
+      (hasPrefix (printf "%s/" $configRoot) $mountRoot)
+      (hasPrefix (printf "%s/" $runtimeRoot) $configRoot)
+      (hasPrefix (printf "%s/" $configRoot) $runtimeRoot)
+      (hasPrefix (printf "%s/" $mountRoot) $logRoot)
+      (hasPrefix (printf "%s/" $logRoot) $mountRoot)
+      (hasPrefix (printf "%s/" $runtimeRoot) $logRoot)
+      (hasPrefix (printf "%s/" $logRoot) $runtimeRoot)
+      (hasPrefix (printf "%s/" $configRoot) $logRoot)
+      (hasPrefix (printf "%s/" $logRoot) $configRoot) -}}
+{{- fail "cache host mount, runtime, config, and log paths must not overlap" -}}
+{{- end -}}
+{{- if not (regexMatch `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` .Values.cache.cacheDirName) -}}
+{{- fail "cache.cacheDirName must be one safe path component" -}}
+{{- end -}}
+
+{{- $virtualShards := float64 .Values.controller.virtualShards -}}
+{{- $virtualShardInteger := int $virtualShards -}}
+{{- if or
+      (ne $virtualShards (floor $virtualShards))
+      (not (has $virtualShardInteger (list 16 32 64 128 256 512 1024 2048 4096 8192 16384))) -}}
+{{- fail "controller.virtualShards must be a power of two between 16 and 16384" -}}
+{{- end -}}
+{{- range $name, $value := dict
+      "cache.maxAgeSeconds" .Values.cache.maxAgeSeconds
+      "cache.mapReloadInterval" .Values.cache.mapReloadInterval
+      "cache.cleanup.interval" .Values.cache.cleanup.interval
+      "cache.cleanup.maxFiles" .Values.cache.cleanup.maxFiles
+      "controller.reconcileInterval" .Values.controller.reconcileInterval
+      "controller.heartbeatTimeout" .Values.controller.heartbeatTimeout
+      "controller.fallbackGraceSeconds" .Values.controller.fallbackGraceSeconds
+      "controller.mapBackupRetention" .Values.controller.mapBackupRetention
+      "migrationAgent.timeout" .Values.migrationAgent.timeout
+      "nodeAgent.reconcileInterval" .Values.nodeAgent.reconcileInterval
+      "nodeAgent.peerProbeTimeout" .Values.nodeAgent.peerProbeTimeout
+      "cache.access.sharedGid" .Values.cache.access.sharedGid -}}
+{{- $number := float64 $value -}}
+{{- if or (le $number 0.0) (ne $number (floor $number)) -}}
+{{- fail (printf "%s must be a positive integer" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- if gt (int .Values.controller.mapBackupRetention) 100 -}}
+{{- fail "controller.mapBackupRetention must not exceed 100" -}}
+{{- end -}}
+{{- if not (has .Values.controller.rebalanceMode (list "automatic" "manual" "immediate")) -}}
+{{- fail "controller.rebalanceMode must be automatic, manual, or immediate" -}}
+{{- end -}}
+{{- if and
+      (ne .Values.controller.rebalanceMode "immediate")
+      (gt (int .Values.controller.virtualShards) 4096) -}}
+{{- fail "controller.virtualShards must not exceed 4096 in automatic or manual rebalance mode" -}}
+{{- end -}}
+{{- if and
+      (ne .Values.controller.rebalanceMode "immediate")
+      (le (int .Values.controller.fallbackGraceSeconds) (int .Values.cache.mapReloadInterval)) -}}
+{{- fail "controller.fallbackGraceSeconds must be greater than cache.mapReloadInterval for staged rebalance" -}}
+{{- end -}}
+{{- range $name, $value := dict
+      "controller.rebalanceApprovalAnnotation" .Values.controller.rebalanceApprovalAnnotation
+      "controller.migrationStatusAnnotation" .Values.controller.migrationStatusAnnotation -}}
+{{- if not (regexMatch `^[a-z0-9]([-a-z0-9.]*[a-z0-9])?/[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$` $value) -}}
+{{- fail (printf "%s must be a qualified Kubernetes annotation name" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (has .Values.cache.access.mode (list "trustedShared" "sharedGroup")) -}}
+{{- fail "cache.access.mode must be trustedShared or sharedGroup" -}}
+{{- end -}}
+{{- if gt (int64 .Values.cache.access.sharedGid) 2147483647 -}}
+{{- fail "cache.access.sharedGid must be a valid Linux group ID" -}}
+{{- end -}}
+{{- if le (int .Values.controller.heartbeatTimeout) (int .Values.nodeAgent.reconcileInterval) -}}
+{{- fail "controller.heartbeatTimeout must be greater than nodeAgent.reconcileInterval" -}}
+{{- end -}}
+
+{{- $highWatermark := float64 .Values.cache.cleanup.highWatermark -}}
+{{- $targetWatermark := float64 .Values.cache.cleanup.targetWatermark -}}
+{{- if or
+      (le $targetWatermark 0.0)
+      (ge $highWatermark 1.0)
+      (ge $targetWatermark $highWatermark) -}}
+{{- fail "cache cleanup watermarks must satisfy 0 < targetWatermark < highWatermark < 1" -}}
+{{- end -}}

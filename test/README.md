@@ -39,6 +39,8 @@ go test -count=1 ./... -run TestValidation -timeout 30m
 
 go test -count=1 ./... -run TestPlanSmoke -timeout 10m
 
+python3 -m unittest discover -s quickcache -p 'test_*.py'
+
 go test -count=1 ./... -run TestCoreProvisioning -timeout 2h
 ```
 
@@ -68,6 +70,12 @@ Monitoring example:
 TFVARS_FILE=./tfvars/base/base.tfvars,./tfvars/monitoring/monitoring.tfvars go test -count=1 ./... -run TestMonitoring -timeout 3h
 ```
 
+QuickCache plan example (requires the GPU inputs described above):
+
+```sh
+TFVARS_FILE=./tfvars/base/base.tfvars,./tfvars/quickcache/quickcache.tfvars go test -count=1 ./... -run TestPlanSmoke -timeout 30m
+```
+
 Pre-built topology configs are available under `tfvars/core/` (Terraform core), `tfvars/tf/` (Terraform topologies), and `tfvars/orm/` (ORM JSON):
 
 | Path | Description |
@@ -77,6 +85,7 @@ Pre-built topology configs are available under `tfvars/core/` (Terraform core), 
 | `tfvars/core/all-private.tfvars` | Fully private cluster |
 | `tfvars/core/all-private-operator.tfvars` | Fully private cluster with operator |
 | `tfvars/core/all-private-bastion-service.tfvars` | Fully private cluster with bastion service |
+| `tfvars/quickcache/quickcache.tfvars` | GPU worker with OCI QuickCache enabled |
 | `tfvars/tf/public-base-tf.tfvars` | TF public cluster, base topology |
 | `tfvars/tf/public-bastion-operator-tf.tfvars` | TF public cluster with bastion and operator |
 | `tfvars/tf/public-fss-monitoring-tf.tfvars` | TF public cluster with FSS and monitoring |

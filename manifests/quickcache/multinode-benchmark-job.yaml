@@ -1,0 +1,202 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: quickcache-multinode-benchmark
+spec:
+  # Set both values to the number of eligible QuickCache workload nodes.
+  completions: 3
+  parallelism: 3
+  completionMode: Indexed
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: quickcache-multinode-benchmark
+    spec:
+      restartPolicy: Never
+      securityContext:
+        # Change this when quickcache_shared_gid is customized.
+        supplementalGroups: [1500]
+      nodeSelector:
+        oci-hpc-oke.oracle.com/quickcache-ready: "true"
+      tolerations:
+        - operator: Exists
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: quickcache-multinode-benchmark
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: quickcache-multinode-benchmark
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: benchmark
+          image: ghcr.io/astral-sh/uv:0.7.12-python3.12-bookworm-slim
+          command: ["uv", "run", "--with", "boto3", "python", "-c"]
+          args:
+            - |
+              import json
+              import os
+              import time
+              from pathlib import Path
+              from urllib.parse import urlparse
+
+              import boto3
+              from botocore.config import Config
+              from cache_paths import shard_for_resource
+
+              iterations = int(os.environ.get("QC_ITERATIONS", "5"))
+              chunk_size = int(os.environ.get("QC_CHUNK_SIZE", str(8 * 1024 * 1024)))
+              completion_index = int(os.environ["JOB_COMPLETION_INDEX"])
+              if os.environ.get("S3_KEYS_JSON"):
+                  keys = json.loads(os.environ["S3_KEYS_JSON"])
+                  if completion_index >= len(keys):
+                      raise ValueError("S3_KEYS_JSON has fewer keys than Job completions")
+                  key = str(keys[completion_index])
+              elif os.environ.get("S3_KEY_TEMPLATE"):
+                  key = os.environ["S3_KEY_TEMPLATE"].format(index=completion_index)
+              else:
+                  key = os.environ["S3_KEY"]
+              request = {"Bucket": os.environ["S3_BUCKET"], "Key": key}
+              client = boto3.client(
+                  "s3",
+                  endpoint_url=os.environ["S3_ENDPOINT_URL"],
+                  region_name=os.environ["AWS_DEFAULT_REGION"],
+                  config=Config(
+                      signature_version="s3v4",
+                      s3={"addressing_style": "path"},
+                      request_checksum_calculation="when_required",
+                      response_checksum_validation="when_required",
+                  ),
+              )
+              endpoint = urlparse(os.environ["S3_ENDPOINT_URL"])
+              endpoint_scope = (
+                  f"{endpoint.scheme.lower()}://{endpoint.netloc.lower()}"
+                  f"{endpoint.path.rstrip('/')}"
+              )
+              shard_map = json.loads(Path("/etc/ociqc/shard_map.json").read_text())
+              shard, _digest = shard_for_resource(
+                  request["Bucket"], key, len(shard_map), None, endpoint_scope
+              )
+              cache_owner = Path(shard_map[str(shard)]).name
+
+              # Populate the owner before timed reads. Concurrent warmups are
+              # safe because QuickCache publishes complete files atomically.
+              warm = client.get_object(**request)
+              warm_bytes = sum(len(chunk) for chunk in warm["Body"].iter_chunks(chunk_size))
+              warm["Body"].close()
+              if warm_bytes <= 0:
+                  raise AssertionError("benchmark object must be non-empty")
+              start_epoch = float(os.environ.get("QC_START_EPOCH", "0"))
+              if start_epoch:
+                  delay = start_epoch - time.time()
+                  if delay < 0:
+                      raise RuntimeError(
+                          f"benchmark synchronization deadline passed by {-delay:.1f}s"
+                      )
+                  time.sleep(delay)
+              else:
+                  time.sleep(2)
+
+              total_bytes = 0
+              first_byte_seconds = []
+              wall_started = time.time()
+              started = time.perf_counter()
+              for _ in range(iterations):
+                  request_started = time.perf_counter()
+                  response = client.get_object(**request)
+                  if not getattr(response["Body"], "from_cache", False):
+                      raise AssertionError("timed benchmark read was not served by QuickCache")
+                  first = response["Body"].read(min(chunk_size, 1024 * 1024))
+                  first_byte_seconds.append(time.perf_counter() - request_started)
+                  received = len(first)
+                  received += sum(
+                      len(chunk)
+                      for chunk in response["Body"].iter_chunks(chunk_size)
+                  )
+                  response["Body"].close()
+                  if received != warm_bytes:
+                      raise AssertionError(f"short cache read: {received}/{warm_bytes}")
+                  total_bytes += received
+              elapsed = time.perf_counter() - started
+              wall_finished = time.time()
+              result = {
+                  "node": os.environ["NODE_NAME"],
+                  "pod": os.environ["POD_NAME"],
+                  "object_key": key,
+                  "shard": shard,
+                  "cache_owner": cache_owner,
+                  "iterations": iterations,
+                  "object_bytes": warm_bytes,
+                  "total_bytes": total_bytes,
+                  "elapsed_seconds": round(elapsed, 6),
+                  "wall_started_epoch": round(wall_started, 6),
+                  "wall_finished_epoch": round(wall_finished, 6),
+                  "throughput_mib_s": round(total_bytes / elapsed / 1024 / 1024, 3),
+                  "average_first_byte_ms": round(
+                      sum(first_byte_seconds) / len(first_byte_seconds) * 1000, 3
+                  ),
+                  "all_reads_from_cache": True,
+              }
+              print(json.dumps(result, sort_keys=True), flush=True)
+          envFrom:
+            - secretRef:
+                name: quickcache-s3
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: JOB_COMPLETION_INDEX
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['batch.kubernetes.io/job-completion-index']
+            - name: PYTHONPATH
+              value: /opt/ociqc
+            - name: OCI_QC_ENV_PATH
+              value: /etc/ociqc/env.json
+            - name: QC_ITERATIONS
+              value: "5"
+            # The runner replaces zero with a shared future epoch so all pods
+            # enter their timed loop together after dependency install/warmup.
+            - name: QC_START_EPOCH
+              value: "0"
+          volumeMounts:
+            - name: quickcache-runtime
+              mountPath: /opt/ociqc
+              readOnly: true
+            - name: quickcache-config
+              mountPath: /etc/ociqc
+              readOnly: true
+            - name: quickcache-peers
+              mountPath: /var/lib/ociqc/mounts
+              mountPropagation: HostToContainer
+            - name: quickcache-logs
+              mountPath: /var/log/ociqc
+      volumes:
+        - name: quickcache-runtime
+          hostPath:
+            path: /var/lib/ociqc/runtime
+            type: Directory
+        - name: quickcache-config
+          hostPath:
+            path: /var/lib/ociqc/config
+            type: Directory
+        - name: quickcache-peers
+          hostPath:
+            path: /var/lib/ociqc/mounts
+            type: Directory
+        - name: quickcache-logs
+          hostPath:
+            path: /var/lib/ociqc/logs
+            type: Directory

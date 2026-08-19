@@ -243,6 +243,12 @@ jobs:
           SSH_PUBLIC_KEY: ${{ vars.SSH_PUBLIC_KEY }}
         run: go test -v -count=1 -run TestValidation -timeout 30m ./...
 
+      - name: Run QuickCache unit and security tests
+        working-directory: test
+        run: |
+          go test -v -count=1 -run TestQuickCache ./...
+          python3 -m unittest discover -s quickcache -p 'test_*.py'
+
   # ---------------------------------------------------------------------------
   # Terraform plan smoke tests: run terraform plan (no apply) across multiple
   # config combinations to catch regressions before anything is provisioned.

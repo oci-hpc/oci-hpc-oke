@@ -5,7 +5,9 @@
 *.tfstate.*
 *.tfvars
 *.tfvars.json
+!/test/tfvars/quickcache/quickcache.tfvars
 .env
 .idea*
 .oca*
 __pycache__/
+/manifests/quickcache/quickcache-s3-secret.yaml
