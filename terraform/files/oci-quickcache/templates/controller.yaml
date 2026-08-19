@@ -1,0 +1,120 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "oci-quickcache.fullname" . }}-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "oci-quickcache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "oci-quickcache.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        {{- include "oci-quickcache.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: controller
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/runtime: {{ include (print $.Template.BasePath "/runtime-configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "oci-quickcache.fullname" . }}
+      priorityClassName: system-cluster-critical
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: runtime
+          configMap:
+            name: {{ include "oci-quickcache.fullname" . }}-runtime
+        - name: uv-cache
+          emptyDir: {}
+        - name: health
+          emptyDir: {}
+      containers:
+        - name: controller
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["uv", "run", "/runtime/controller.py"]
+          env:
+            - name: UV_CACHE_DIR
+              value: /tmp/uv-cache
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: STATE_CONFIGMAP_NAME
+              value: {{ .Values.stateConfigMapName | quote }}
+            - name: QUICKCACHE_LABEL
+              value: {{ .Values.quickcacheLabel | quote }}
+            - name: QUICKCACHE_READY_LABEL
+              value: {{ .Values.quickcacheReadyLabel | quote }}
+            - name: CLIENT_ENABLED
+              value: {{ .Values.clientAgent.enabled | quote }}
+            - name: QUICKCACHE_CLIENT_LABEL
+              value: {{ .Values.quickcacheClientLabel | quote }}
+            - name: QUICKCACHE_CLIENT_READY_LABEL
+              value: {{ .Values.quickcacheClientReadyLabel | quote }}
+            - name: HEARTBEAT_ANNOTATION
+              value: {{ .Values.heartbeatAnnotation | quote }}
+            - name: HEARTBEAT_TIMEOUT
+              value: {{ .Values.controller.heartbeatTimeout | quote }}
+            - name: VIRTUAL_SHARDS
+              value: {{ .Values.controller.virtualShards | quote }}
+            - name: REBALANCE_MODE
+              value: {{ .Values.controller.rebalanceMode | quote }}
+            - name: FALLBACK_GRACE_SECONDS
+              value: {{ .Values.controller.fallbackGraceSeconds | quote }}
+            - name: REBALANCE_APPROVAL_ANNOTATION
+              value: {{ .Values.controller.rebalanceApprovalAnnotation | quote }}
+            - name: MIGRATION_STATUS_ANNOTATION
+              value: {{ .Values.controller.migrationStatusAnnotation | quote }}
+            - name: MAP_BACKUP_RETENTION
+              value: {{ .Values.controller.mapBackupRetention | quote }}
+            - name: RECONCILE_INTERVAL
+              value: {{ .Values.controller.reconcileInterval | quote }}
+            - name: HOST_MOUNT_ROOT
+              value: {{ .Values.cache.hostMountRoot | quote }}
+          volumeMounts:
+            - name: runtime
+              mountPath: /runtime
+              readOnly: true
+            - name: uv-cache
+              mountPath: /tmp/uv-cache
+            - name: health
+              mountPath: /tmp/health
+          livenessProbe:
+            exec:
+              command: ["test", "-f", "/tmp/health/alive"]
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["test", "-f", "/tmp/health/ready"]
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

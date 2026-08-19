@@ -1,0 +1,100 @@
+image:
+  repository: ghcr.io/astral-sh/uv
+  tag: "0.7.12-python3.12-bookworm-slim"
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+quickcacheLabel: oci-hpc-oke.oracle.com/quickcache
+quickcacheReadyLabel: oci-hpc-oke.oracle.com/quickcache-ready
+quickcacheClientLabel: oci-hpc-oke.oracle.com/quickcache-client
+quickcacheClientReadyLabel: oci-hpc-oke.oracle.com/quickcache-client-ready
+heartbeatAnnotation: oci-hpc-oke.oracle.com/quickcache-heartbeat
+stateConfigMapName: oci-quickcache-state
+
+controller:
+  reconcileInterval: 30
+  heartbeatTimeout: 120
+  virtualShards: 1024
+  # automatic copies warm shards before cutover; manual waits for an approval
+  # annotation; immediate preserves the legacy cold-rebalance behavior.
+  rebalanceMode: automatic
+  fallbackGraceSeconds: 3600
+  rebalanceApprovalAnnotation: oci-hpc-oke.oracle.com/quickcache-approve-rebalance
+  migrationStatusAnnotation: oci-hpc-oke.oracle.com/quickcache-migration
+  # Full pre-cutover shard maps are retained as bounded, namespaced ConfigMaps.
+  mapBackupRetention: 20
+  nodeSelector:
+    oke.oraclecloud.com/pool.name: oke-system
+  tolerations:
+    - operator: Exists
+  resources:
+    requests:
+      cpu: 25m
+      memory: 96Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+nodeAgent:
+  reconcileInterval: 30
+  peerProbeTimeout: 5
+  priorityClassName: system-node-critical
+  tolerations:
+    - operator: Exists
+  nodeSelector: {}
+  resources:
+    requests:
+      cpu: 25m
+      memory: 96Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+migrationAgent:
+  timeout: 86400
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+clientAgent:
+  enabled: false
+  priorityClassName: system-node-critical
+  tolerations:
+    - operator: Exists
+  nodeSelector: {}
+  resources:
+    requests:
+      cpu: 25m
+      memory: 96Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+cache:
+  localPath: /mnt/nvme/ociqc/object_store
+  hostMountRoot: /var/lib/ociqc/mounts
+  hostRuntimeRoot: /var/lib/ociqc/runtime
+  hostConfigRoot: /var/lib/ociqc/config
+  hostLogRoot: /var/lib/ociqc/logs
+  cacheDirName: OCI_QC_Cache
+  # trustedShared preserves the existing arbitrary-UID behavior. sharedGroup
+  # restricts cache and audit writes to workloads using access.sharedGid.
+  access:
+    mode: trustedShared
+    sharedGid: 1500
+  maxAgeSeconds: 36000000
+  mapReloadInterval: 60
+  cacheRangeGets: true
+  nfsOptions: rw,nfsvers=4.1,soft,timeo=50,retrans=2,nconnect=16,noatime
+  cleanup:
+    interval: 1800
+    highWatermark: 0.90
+    targetWatermark: 0.70
+    maxFiles: 500000000
+
+podAnnotations: {}
+podLabels: {}

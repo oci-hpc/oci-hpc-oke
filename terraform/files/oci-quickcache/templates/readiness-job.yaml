@@ -1,0 +1,85 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "oci-quickcache.fullname" . }}-readiness
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "oci-quickcache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: readiness
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  activeDeadlineSeconds: 870
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        {{- include "oci-quickcache.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: readiness
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "oci-quickcache.fullname" . }}
+      {{- with .Values.controller.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: runtime
+          configMap:
+            name: {{ include "oci-quickcache.fullname" . }}-runtime
+      containers:
+        - name: readiness
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["uv", "run", "/runtime/healthcheck.py"]
+          env:
+            - name: UV_CACHE_DIR
+              value: /tmp/uv-cache
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: QUICKCACHE_LABEL
+              value: {{ .Values.quickcacheLabel | quote }}
+            - name: QUICKCACHE_READY_LABEL
+              value: {{ .Values.quickcacheReadyLabel | quote }}
+            - name: CLIENT_ENABLED
+              value: {{ .Values.clientAgent.enabled | quote }}
+            - name: QUICKCACHE_CLIENT_LABEL
+              value: {{ .Values.quickcacheClientLabel | quote }}
+            - name: QUICKCACHE_CLIENT_READY_LABEL
+              value: {{ .Values.quickcacheClientReadyLabel | quote }}
+            - name: STATE_CONFIGMAP_NAME
+              value: {{ .Values.stateConfigMapName | quote }}
+            - name: CONTROLLER_NAME
+              value: {{ printf "%s-controller" (include "oci-quickcache.fullname" .) | quote }}
+            - name: NODE_AGENT_NAME
+              value: {{ printf "%s-node-agent" (include "oci-quickcache.fullname" .) | quote }}
+            - name: CLIENT_AGENT_NAME
+              value: {{ printf "%s-client-agent" (include "oci-quickcache.fullname" .) | quote }}
+            - name: VIRTUAL_SHARDS
+              value: {{ .Values.controller.virtualShards | quote }}
+            - name: TIMEOUT_SECONDS
+              value: "840"
+          volumeMounts:
+            - name: runtime
+              mountPath: /runtime
+              readOnly: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

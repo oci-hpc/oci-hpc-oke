@@ -146,8 +146,12 @@ locals {
         { "areLegacyImdsEndpointsDisabled" : var.legacy_imds_endpoints_disabled },
         local.node_metadata
       )
-      cloud_init  = [{ content_type = "text/cloud-config", content = yamlencode(local.cloud_init) }]
-      node_labels = var.install_slinky && !var.slinky_hostname_prefix_disabled ? { "oci.oraclecloud.com/slinky-hostname-prefix" = local.slinky_cpu_hostname_prefix } : {}
+      cloud_init = [{ content_type = "text/cloud-config", content = yamlencode(local.cloud_init) }]
+      node_labels = merge(
+        var.install_slinky && !var.slinky_hostname_prefix_disabled ? { "oci.oraclecloud.com/slinky-hostname-prefix" = local.slinky_cpu_hostname_prefix } : {},
+        var.install_quickcache && contains(local.quickcache_worker_pools_effective, "oke-cpu") ? { "oci-hpc-oke.oracle.com/quickcache" = "true" } : {},
+        var.install_quickcache && contains(local.quickcache_client_worker_pools_effective, "oke-cpu") ? { "oci-hpc-oke.oracle.com/quickcache-client" = "true" } : {},
+      )
     }
     "oke-gpu" = {
       create             = local.create_workers && var.worker_gpu_enabled
@@ -166,6 +170,8 @@ locals {
       node_labels = merge(
         { "oci.oraclecloud.com/disable-gpu-device-plugin" = var.disable_gpu_device_plugin ? "true" : "false" },
         var.install_slinky && !var.slinky_hostname_prefix_disabled ? { "oci.oraclecloud.com/slinky-hostname-prefix" = local.slinky_gpu_hostname_prefix } : {},
+        var.install_quickcache && contains(local.quickcache_worker_pools_effective, "oke-gpu") ? { "oci-hpc-oke.oracle.com/quickcache" = "true" } : {},
+        var.install_quickcache && contains(local.quickcache_client_worker_pools_effective, "oke-gpu") ? { "oci-hpc-oke.oracle.com/quickcache-client" = "true" } : {},
       )
       node_cycling_enabled         = var.worker_gpu_node_cycling_enabled
       node_cycling_max_surge       = var.worker_gpu_node_cycling_max_surge
@@ -198,6 +204,8 @@ locals {
       node_labels = merge(
         { "oci.oraclecloud.com/disable-gpu-device-plugin" = var.disable_gpu_device_plugin ? "true" : "false" },
         var.install_slinky && !var.slinky_hostname_prefix_disabled ? { "oci.oraclecloud.com/slinky-hostname-prefix" = local.slinky_rdma_hostname_prefix } : {},
+        var.install_quickcache && contains(local.quickcache_worker_pools_effective, "oke-rdma") ? { "oci-hpc-oke.oracle.com/quickcache" = "true" } : {},
+        var.install_quickcache && contains(local.quickcache_client_worker_pools_effective, "oke-rdma") ? { "oci-hpc-oke.oracle.com/quickcache-client" = "true" } : {},
       )
       agent_config = {
         are_all_plugins_disabled = false
@@ -242,6 +250,8 @@ locals {
       node_labels = merge(
         { "oci.oraclecloud.com/disable-gpu-device-plugin" = var.disable_gpu_device_plugin ? "true" : "false" },
         var.install_slinky && !var.slinky_hostname_prefix_disabled ? { "oci.oraclecloud.com/slinky-hostname-prefix" = local.slinky_gmc_hostname_prefix } : {},
+        var.install_quickcache && contains(local.quickcache_worker_pools_effective, "oke-gmc") ? { "oci-hpc-oke.oracle.com/quickcache" = "true" } : {},
+        var.install_quickcache && contains(local.quickcache_client_worker_pools_effective, "oke-gmc") ? { "oci-hpc-oke.oracle.com/quickcache-client" = "true" } : {},
       )
       agent_config = {
         are_all_plugins_disabled = false

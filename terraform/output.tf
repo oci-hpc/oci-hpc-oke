@@ -136,6 +136,17 @@ output "worker_ops_pool_id" { value = lookup(module.oke.worker_pool_ids, "oke-sy
 output "worker_cpu_pool_id" { value = lookup(module.oke.worker_pool_ids, "oke-cpu", null) }
 output "worker_gpu_pool_id" { value = lookup(module.oke.worker_pool_ids, "oke-gpu", null) }
 output "worker_rdma_pool_id" { value = lookup(module.oke.worker_pool_ids, "oke-rdma", null) }
+output "quickcache_worker_pools" { value = var.install_quickcache ? join(",", local.quickcache_worker_pools_effective) : "" }
+output "quickcache_client_worker_pools" { value = var.install_quickcache ? join(",", local.quickcache_client_worker_pools_effective) : "" }
+output "quickcache_status_command" {
+  value = var.install_quickcache ? join(" ", compact([
+    "kubectl -n kube-system get",
+    "deployment/quickcache-oci-quickcache-controller",
+    "daemonset/quickcache-oci-quickcache-node-agent",
+    length(local.quickcache_client_worker_pools_effective) > 0 ? "daemonset/quickcache-oci-quickcache-client-agent" : "",
+    "configmap/oci-quickcache-state",
+  ])) : "N/A"
+}
 
 # Monitoring
 output "grafana_fetch_endpoint_command" {

@@ -58,6 +58,12 @@ To use the RDMA interfaces in your pods, see [Using RDMA Network Interfaces in M
 
 See [Running NCCL and RCCL Tests with Kueue and MPI Operator](./docs/running-nccl-rccl-tests-with-kueue.md) for deployment steps, per-shape test manifests, and example output.
 
+## Optional: Deploy OCI QuickCache
+
+OCI QuickCache provides a cluster-wide read-through cache for S3-compatible
+`GetObject` workloads using the local NVMe storage on selected OKE workers. See
+[Using OCI QuickCache on OKE](./docs/using-quickcache-on-oke.md).
+
 ## Documentation
 
 See the [documentation index](./docs/README.md) for guides on health checks, running NCCL/RCCL tests, RDMA networking, the Slurm Operator, and more.

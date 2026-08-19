@@ -24,6 +24,7 @@ Engine (OKE). For deployment and project overview, see the
 - [Running PyTorch Jobs on OKE Using Host Network with RDMA](./running-pytorch-jobs-on-oke-using-hostnetwork-with-rdma.md): Run PyTorch distributed jobs over the host network with RDMA.
 - [Using RDMA Network Locality When Running Workloads on OKE](./using-rdma-network-locality-when-running-workloads-on-oke.md): Schedule workloads using RDMA network topology and locality.
 - [Using Dynamic Resource Allocation (DRA) for Multi-Node NVLink](./using-dynamic-resource-allocation-for-multi-node-nvlink-imex.md): Use DRA for multi-node NVLink (IMEX).
+- [Using OCI QuickCache on OKE](./using-quickcache-on-oke.md): Cache S3-compatible GetObject reads across NVMe-backed OKE workers.
 
 ## NCCL and RCCL
 

@@ -287,6 +287,24 @@ variableGroups:
     variables:
     - nvme_raid_enabled
     - nvme_raid_level
+    - install_quickcache
+    - quickcache_advanced_options
+    - quickcache_worker_pools
+    - quickcache_client_worker_pools
+    - quickcache_access_mode
+    - quickcache_shared_gid
+    - quickcache_peer_probe_timeout
+    - quickcache_virtual_shards
+    - quickcache_rebalance_mode
+    - quickcache_rebalance_grace_period
+    - quickcache_map_backup_retention
+    - quickcache_max_cache_age
+    - quickcache_map_reload_interval
+    - quickcache_cache_range_gets
+    - quickcache_cleanup_high_watermark
+    - quickcache_cleanup_target_watermark
+    - quickcache_max_cache_files
+    - quickcache_values_override
     - create_fss
     - fss_ad
     - fss_mount_path
@@ -1270,6 +1288,182 @@ variables:
     enum: ["0", "10"]
     required: true
     visible: nvme_raid_enabled
+  install_quickcache:
+    title: Install OCI QuickCache
+    description: Deploy a cluster-wide S3 GetObject read-through cache on selected OKE worker nodes using their existing local NVMe filesystem. QuickCache never creates or reformats the NVMe RAID.
+    type: boolean
+    default: false
+    required: true
+  quickcache_advanced_options:
+    title: QuickCache advanced options
+    type: boolean
+    default: false
+    visible: ${install_quickcache}
+  quickcache_worker_pools:
+    title: QuickCache cache-server worker pools
+    description: NVMe-backed pools that own shards and export cache data. Leave empty to use all enabled GPU, RDMA, and GMC pools. Select oke-cpu only with a DenseIO shape.
+    type: enum
+    enum:
+      - oke-gpu
+      - oke-rdma
+      - oke-gmc
+      - oke-cpu
+    allowMultiple: true
+    required: false
+    visible: ${install_quickcache}
+  quickcache_client_worker_pools:
+    title: Dedicated QuickCache client worker pools
+    description: Optional non-cache-owner pools that mount and consume cache exported by quickcache_worker_pools. Do not select the same pool in both fields.
+    type: enum
+    enum:
+      - oke-gpu
+      - oke-rdma
+      - oke-gmc
+      - oke-cpu
+    allowMultiple: true
+    required: false
+    visible: ${install_quickcache}
+  quickcache_access_mode:
+    title: QuickCache access policy
+    description: trustedShared supports arbitrary pod UIDs. sharedGroup restricts writes to the configured supplemental group.
+    type: enum
+    enum:
+      - trustedShared
+      - sharedGroup
+    default: trustedShared
+    visible:
+      and:
+        - ${install_quickcache}
+        - ${quickcache_advanced_options}
+  quickcache_shared_gid:
+    title: QuickCache shared group ID
+    type: integer
+    default: 1500
+    minimum: 1
+    visible:
+      and:
+        - ${install_quickcache}
+        - ${quickcache_advanced_options}
+        - eq: [quickcache_access_mode, "sharedGroup"]
+  quickcache_peer_probe_timeout:
+    title: NFS peer I/O probe timeout (seconds)
+    type: integer
+    default: 5
+    minimum: 1
+    visible:
+      and:
+        - ${install_quickcache}
+        - ${quickcache_advanced_options}
+  quickcache_virtual_shards:
+    title: QuickCache virtual shards
+    description: Fixed power-of-two shard count. Do not change this after cache data exists. Automatic and manual rebalance modes support at most 4096.
+    type: integer
+    default: 1024
+    minimum: 16
+    maximum: 16384
+    visible:
+      and:
+        - ${install_quickcache}
+        - ${quickcache_advanced_options}
+  quickcache_rebalance_mode:
+    title: QuickCache shard rebalance mode
+    description: automatic copies warm shard data before cutover; manual prepares a plan and waits for approval; immediate cuts over at once and moved shards start cold.
+    type: enum
+    enum:
+      - automatic
+      - manual
+      - immediate
+    default: automatic
+    visible:
+      and:
+        - ${install_quickcache}
+        - ${quickcache_advanced_options}
+  quickcache_rebalance_grace_period:
+    title: QuickCache previous-owner fallback (seconds)
+    description: Retain the previous shard map for this long after a staged cutover, then perform a final copy and remove obsolete source shards.
+    type: integer
+    default: 3600
+    minimum: 1
+    visible:
+      and:
+        - ${install_quickcache}
+        - ${quickcache_advanced_options}
+  quickcache_map_backup_retention:
+    title: QuickCache shard-map backup retention
+    description: Number of complete pre-cutover shard maps retained as namespaced ConfigMaps for audit and recovery.
+    type: integer
+    default: 20
+    minimum: 1
+    maximum: 100
+    visible:
+      and:
+        - ${install_quickcache}
+        - ${quickcache_advanced_options}
+  quickcache_max_cache_age:
+    title: Cached object maximum age (seconds)
+    type: integer
+    default: 36000000
+    minimum: 1
+    visible:
+      and:
+        - ${install_quickcache}
+        - ${quickcache_advanced_options}
+  quickcache_map_reload_interval:
+    title: Shard-map reload interval (seconds)
+    type: integer
+    default: 60
+    minimum: 1
+    visible:
+      and:
+        - ${install_quickcache}
+        - ${quickcache_advanced_options}
+  quickcache_cache_range_gets:
+    title: Cache byte-range GetObject requests
+    description: A cold range request downloads and caches the complete object before returning the requested range.
+    type: boolean
+    default: true
+    visible:
+      and:
+        - ${install_quickcache}
+        - ${quickcache_advanced_options}
+  quickcache_cleanup_high_watermark:
+    title: Cleanup high watermark
+    type: number
+    default: 0.90
+    minimum: 0.01
+    maximum: 0.99
+    visible:
+      and:
+        - ${install_quickcache}
+        - ${quickcache_advanced_options}
+  quickcache_cleanup_target_watermark:
+    title: Cleanup target watermark
+    type: number
+    default: 0.70
+    minimum: 0.01
+    maximum: 0.98
+    visible:
+      and:
+        - ${install_quickcache}
+        - ${quickcache_advanced_options}
+  quickcache_max_cache_files:
+    title: Maximum used filesystem inodes
+    type: integer
+    default: 500000000
+    minimum: 1
+    visible:
+      and:
+        - ${install_quickcache}
+        - ${quickcache_advanced_options}
+  quickcache_values_override:
+    title: Additional QuickCache Helm values
+    type: string
+    multiline: true
+    default: ""
+    visible:
+      and:
+        - ${install_quickcache}
+        - ${quickcache_advanced_options}
   create_lustre:
     title: Create a File Storage with Lustre file system
     description: Provision a shared Lustre file system and a PV backed by the Lustre file system. The OS images used for the worker nodes must have the Lustre client installed.
@@ -3157,6 +3351,12 @@ outputGroups:
       - worker_rdma_pool_id
       - worker_rdma_image_id
 
+  - title: QuickCache
+    outputs:
+      - quickcache_worker_pools
+      - quickcache_client_worker_pools
+      - quickcache_status_command
+
   - title: Slurm Operator
     outputs:
       - slinky_openldap_admin_password
@@ -3205,6 +3405,19 @@ outputs:
     visible: false
   network_security_rules:
     visible: false
+
+  quickcache_worker_pools:
+    title: QuickCache cache-server worker pools
+    type: string
+    visible: ${install_quickcache}
+  quickcache_client_worker_pools:
+    title: QuickCache client worker pools
+    type: string
+    visible: ${install_quickcache}
+  quickcache_status_command:
+    title: QuickCache status command
+    type: copyableString
+    visible: ${install_quickcache}
 
   # Bastion
   bastion_id:

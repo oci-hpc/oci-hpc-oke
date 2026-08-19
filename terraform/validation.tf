@@ -52,6 +52,59 @@ locals {
   is_vcn_native_cni     = contains(["npn", "VCN-Native Pod Networking"], var.cni_type)
   invalid_pods_capacity = local.is_vcn_native_cni && local.total_pods_required > local.pods_subnet_capacity
 
+  invalid_quickcache_no_pools = alltrue([
+    var.install_quickcache,
+    length(local.quickcache_worker_pools_effective) == 0,
+  ])
+  invalid_quickcache_pools = alltrue([
+    var.install_quickcache,
+    length(setsubtract(toset(local.quickcache_worker_pools_effective), local.quickcache_available_worker_pools)) > 0,
+  ])
+  invalid_quickcache_client_pools = alltrue([
+    var.install_quickcache,
+    length(setsubtract(toset(local.quickcache_client_worker_pools_effective), local.quickcache_available_worker_pools)) > 0,
+  ])
+  invalid_quickcache_pool_overlap = alltrue([
+    var.install_quickcache,
+    length(setintersection(
+      toset(local.quickcache_worker_pools_effective),
+      toset(local.quickcache_client_worker_pools_effective),
+    )) > 0,
+  ])
+  invalid_quickcache_cpu_shape = alltrue([
+    var.install_quickcache,
+    contains(local.quickcache_worker_pools_effective, "oke-cpu"),
+    !strcontains(var.worker_cpu_shape, "DenseIO"),
+  ])
+  invalid_quickcache_storage = alltrue([
+    var.install_quickcache,
+    !var.nvme_raid_enabled,
+  ])
+  invalid_quickcache_deploy_path = alltrue([
+    var.install_quickcache,
+    !local.deploy_from_local,
+    !local.deploy_from_orm,
+    !local.deploy_from_operator,
+  ])
+  invalid_quickcache_cleanup = alltrue([
+    var.install_quickcache,
+    anytrue([
+      var.quickcache_cleanup_target_watermark <= 0,
+      var.quickcache_cleanup_high_watermark >= 1,
+      var.quickcache_cleanup_target_watermark >= var.quickcache_cleanup_high_watermark,
+    ]),
+  ])
+  invalid_quickcache_rebalance_grace = alltrue([
+    var.install_quickcache,
+    var.quickcache_rebalance_mode != "immediate",
+    var.quickcache_rebalance_grace_period <= var.quickcache_map_reload_interval,
+  ])
+  invalid_quickcache_staged_shard_count = alltrue([
+    var.install_quickcache,
+    var.quickcache_rebalance_mode != "immediate",
+    var.quickcache_virtual_shards > 4096,
+  ])
+
   # FSS PV cannot be created when all deploy paths are inactive (private endpoint, no operator, no ORM)
   fss_pv_unreachable = alltrue([
     local.create_fss_effective,
@@ -323,6 +376,64 @@ resource "null_resource" "validate_pods_capacity" {
           - oke-gmc: ${local.pods_required_gmc} (${var.worker_gmc_enabled ? length(local.worker_gmc_gpu_memory_fabric_ids) * var.worker_gmc_scale_target_size : 0} nodes × ${var.worker_gmc_max_pods_per_node} pods)
         Consider increasing the pods subnet size or reducing max_pods_per_node/pool_size values.
       EOT
+    }
+  }
+}
+
+resource "null_resource" "validate_quickcache" {
+  count = anytrue([
+    local.invalid_quickcache_no_pools,
+    local.invalid_quickcache_pools,
+    local.invalid_quickcache_client_pools,
+    local.invalid_quickcache_pool_overlap,
+    local.invalid_quickcache_cpu_shape,
+    local.invalid_quickcache_storage,
+    local.invalid_quickcache_deploy_path,
+    local.invalid_quickcache_cleanup,
+    local.invalid_quickcache_rebalance_grace,
+    local.invalid_quickcache_staged_shard_count,
+  ]) ? 1 : 0
+
+  lifecycle {
+    precondition {
+      condition     = !local.invalid_quickcache_no_pools
+      error_message = "install_quickcache=true requires at least one enabled GPU, RDMA, GMC, or explicitly selected DenseIO CPU worker pool."
+    }
+    precondition {
+      condition     = !local.invalid_quickcache_pools
+      error_message = "Every quickcache_worker_pools entry must refer to an enabled OKE worker pool."
+    }
+    precondition {
+      condition     = !local.invalid_quickcache_client_pools
+      error_message = "Every quickcache_client_worker_pools entry must refer to an enabled OKE worker pool."
+    }
+    precondition {
+      condition     = !local.invalid_quickcache_pool_overlap
+      error_message = "QuickCache server and client worker pools must not overlap. Use a server pool directly for converged workloads."
+    }
+    precondition {
+      condition     = !local.invalid_quickcache_cpu_shape
+      error_message = "QuickCache may use oke-cpu only when worker_cpu_shape is an NVMe-backed DenseIO shape."
+    }
+    precondition {
+      condition     = !local.invalid_quickcache_storage
+      error_message = "install_quickcache=true requires nvme_raid_enabled=true; QuickCache never creates or reformats the NVMe array."
+    }
+    precondition {
+      condition     = !local.invalid_quickcache_deploy_path
+      error_message = "install_quickcache=true requires a reachable OKE deployment path: a public control-plane endpoint, Resource Manager private-endpoint deployment, or a bastion and operator host."
+    }
+    precondition {
+      condition     = !local.invalid_quickcache_cleanup
+      error_message = "QuickCache cleanup watermarks must satisfy 0 < target < high < 1."
+    }
+    precondition {
+      condition     = !local.invalid_quickcache_rebalance_grace
+      error_message = "QuickCache staged rebalance grace period must be greater than the shard-map reload interval."
+    }
+    precondition {
+      condition     = !local.invalid_quickcache_staged_shard_count
+      error_message = "QuickCache automatic and manual rebalance modes support at most 4096 virtual shards to keep staged state within the Kubernetes ConfigMap size limit."
     }
   }
 }

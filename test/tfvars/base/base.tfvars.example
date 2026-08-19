@@ -27,5 +27,13 @@ worker_ops_image_custom_id = "<IMAGE_OCID>"     # ocid1.image.oc1...
 # worker_gpu_ad              = "<AD_NAME>"
 # worker_gpu_shape           = "VM.GPU.A10.1"
 # worker_gpu_pool_size       = 1
+
+# QuickCache (requires an enabled NVMe-backed worker pool)
+# install_quickcache              = true
+# quickcache_worker_pools         = ["oke-gpu"] # NVMe-backed shard owners
+# quickcache_client_worker_pools  = []          # optional non-owner clients
+# quickcache_access_mode          = "sharedGroup"
+# quickcache_rebalance_mode       = "automatic" # automatic, manual, or immediate
+# quickcache_shared_gid           = 1500
 # worker_gpu_image_custom_id = "<IMAGE_OCID>"
 # Workflow validation run

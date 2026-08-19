@@ -1,0 +1,142 @@
+{{- if .Values.clientAgent.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "oci-quickcache.fullname" . }}-client-agent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "oci-quickcache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: client-agent
+spec:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: "25%"
+  selector:
+    matchLabels:
+      {{- include "oci-quickcache.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: client-agent
+  template:
+    metadata:
+      labels:
+        {{- include "oci-quickcache.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: client-agent
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/runtime: {{ include (print $.Template.BasePath "/runtime-configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "oci-quickcache.fullname" . }}
+      hostPID: true
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      priorityClassName: {{ .Values.clientAgent.priorityClassName }}
+      terminationGracePeriodSeconds: 180
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      nodeSelector:
+        {{ .Values.quickcacheClientLabel }}: "true"
+        {{- with .Values.clientAgent.nodeSelector }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.clientAgent.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: runtime
+          configMap:
+            name: {{ include "oci-quickcache.fullname" . }}-runtime
+            defaultMode: 0755
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory
+        - name: uv-cache
+          emptyDir: {}
+        - name: health
+          emptyDir: {}
+      containers:
+        - name: client-agent
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["uv", "run", "/runtime/node_agent.py"]
+          env:
+            - name: UV_CACHE_DIR
+              value: /tmp/uv-cache
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: STATE_CONFIGMAP_NAME
+              value: {{ .Values.stateConfigMapName | quote }}
+            - name: QUICKCACHE_READY_LABEL
+              value: {{ .Values.quickcacheClientReadyLabel | quote }}
+            - name: HEARTBEAT_ANNOTATION
+              value: {{ .Values.heartbeatAnnotation | quote }}
+            - name: RECONCILE_INTERVAL
+              value: {{ .Values.nodeAgent.reconcileInterval | quote }}
+            - name: PEER_PROBE_TIMEOUT
+              value: {{ .Values.nodeAgent.peerProbeTimeout | quote }}
+            - name: NODE_MODE
+              value: client
+            - name: LOCAL_CACHE_PATH
+              value: {{ .Values.cache.localPath | quote }}
+            - name: HOST_MOUNT_ROOT
+              value: {{ .Values.cache.hostMountRoot | quote }}
+            - name: HOST_RUNTIME_ROOT
+              value: {{ .Values.cache.hostRuntimeRoot | quote }}
+            - name: HOST_CONFIG_ROOT
+              value: {{ .Values.cache.hostConfigRoot | quote }}
+            - name: HOST_LOG_ROOT
+              value: {{ .Values.cache.hostLogRoot | quote }}
+            - name: CACHE_DIR_NAME
+              value: {{ .Values.cache.cacheDirName | quote }}
+            - name: ACCESS_MODE
+              value: {{ .Values.cache.access.mode | quote }}
+            - name: SHARED_GID
+              value: {{ .Values.cache.access.sharedGid | quote }}
+            - name: NFS_OPTIONS
+              value: {{ .Values.cache.nfsOptions | quote }}
+            - name: CACHE_MAX_AGE
+              value: {{ printf "%d" (int64 .Values.cache.maxAgeSeconds) | quote }}
+            - name: MAP_RELOAD_INTERVAL
+              value: {{ .Values.cache.mapReloadInterval | quote }}
+            - name: CACHE_RANGE_GETS
+              value: {{ .Values.cache.cacheRangeGets | quote }}
+          volumeMounts:
+            - name: runtime
+              mountPath: /runtime
+              readOnly: true
+            - name: host-root
+              mountPath: /host
+              mountPropagation: Bidirectional
+            - name: uv-cache
+              mountPath: /tmp/uv-cache
+            - name: health
+              mountPath: /tmp/health
+          livenessProbe:
+            exec:
+              command: ["test", "-f", "/tmp/health/alive"]
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["test", "-f", "/tmp/health/ready"]
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.clientAgent.resources | nindent 12 }}
+          securityContext:
+            privileged: true
+{{- end }}

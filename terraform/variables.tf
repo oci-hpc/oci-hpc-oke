@@ -288,6 +288,183 @@ variable "create_fss" { default = true }
 variable "fss_ad" { default = "" }
 variable "nvme_raid_enabled" { default = true }
 variable "nvme_raid_level" { default = 10 }
+
+# QUICKCACHE
+variable "install_quickcache" {
+  default     = false
+  type        = bool
+  description = "Install OCI QuickCache on selected NVMe-backed OKE worker pools."
+}
+
+variable "quickcache_advanced_options" {
+  default     = false
+  type        = bool
+  description = "Show advanced QuickCache configuration in OCI Resource Manager."
+}
+
+variable "quickcache_worker_pools" {
+  default     = []
+  type        = set(string)
+  nullable    = false
+  description = "Worker pool names that host QuickCache. Empty automatically selects enabled GPU, RDMA, and GMC pools."
+
+  validation {
+    condition = alltrue([
+      for pool in var.quickcache_worker_pools : contains(["oke-cpu", "oke-gpu", "oke-rdma", "oke-gmc"], pool)
+    ])
+    error_message = "quickcache_worker_pools may contain only oke-cpu, oke-gpu, oke-rdma, and oke-gmc."
+  }
+}
+
+variable "quickcache_client_worker_pools" {
+  default     = []
+  type        = set(string)
+  nullable    = false
+  description = "Optional worker pools that consume dedicated QuickCache servers without owning cache shards. These pools must not overlap quickcache_worker_pools."
+
+  validation {
+    condition = alltrue([
+      for pool in var.quickcache_client_worker_pools : contains(["oke-cpu", "oke-gpu", "oke-rdma", "oke-gmc"], pool)
+    ])
+    error_message = "quickcache_client_worker_pools may contain only oke-cpu, oke-gpu, oke-rdma, and oke-gmc."
+  }
+}
+
+variable "quickcache_access_mode" {
+  default     = "trustedShared"
+  type        = string
+  description = "Cache write-access policy: trustedShared permits arbitrary pod UIDs; sharedGroup requires the configured supplemental GID."
+
+  validation {
+    condition     = contains(["trustedShared", "sharedGroup"], var.quickcache_access_mode)
+    error_message = "quickcache_access_mode must be trustedShared or sharedGroup."
+  }
+}
+
+variable "quickcache_shared_gid" {
+  default     = 1500
+  type        = number
+  description = "Numeric supplemental group used when quickcache_access_mode is sharedGroup."
+
+  validation {
+    condition     = var.quickcache_shared_gid > 0 && var.quickcache_shared_gid <= 2147483647 && floor(var.quickcache_shared_gid) == var.quickcache_shared_gid
+    error_message = "quickcache_shared_gid must be a positive Linux group ID."
+  }
+}
+
+variable "quickcache_peer_probe_timeout" {
+  default     = 5
+  type        = number
+  description = "Seconds allowed for each active NFS peer I/O probe."
+
+  validation {
+    condition     = var.quickcache_peer_probe_timeout > 0 && floor(var.quickcache_peer_probe_timeout) == var.quickcache_peer_probe_timeout
+    error_message = "quickcache_peer_probe_timeout must be a positive integer."
+  }
+}
+
+variable "quickcache_virtual_shards" {
+  default     = 1024
+  type        = number
+  description = "Fixed virtual-shard count. Keep this stable after cache data exists; automatic/manual rebalance modes support at most 4096."
+
+  validation {
+    condition     = var.quickcache_virtual_shards >= 16 && var.quickcache_virtual_shards <= 16384 && pow(2, floor(log(var.quickcache_virtual_shards, 2))) == var.quickcache_virtual_shards
+    error_message = "quickcache_virtual_shards must be a power of two between 16 and 16384."
+  }
+}
+
+variable "quickcache_rebalance_mode" {
+  default     = "automatic"
+  type        = string
+  description = "Shard rebalance policy: automatic stages warm data before cutover, manual waits for approval, and immediate cuts over without migration."
+
+  validation {
+    condition     = contains(["automatic", "manual", "immediate"], var.quickcache_rebalance_mode)
+    error_message = "quickcache_rebalance_mode must be automatic, manual, or immediate."
+  }
+}
+
+variable "quickcache_rebalance_grace_period" {
+  default     = 3600
+  type        = number
+  description = "Seconds to retain the previous-owner fallback after a staged shard-map cutover."
+
+  validation {
+    condition     = var.quickcache_rebalance_grace_period > 0 && floor(var.quickcache_rebalance_grace_period) == var.quickcache_rebalance_grace_period
+    error_message = "quickcache_rebalance_grace_period must be a positive integer."
+  }
+}
+
+variable "quickcache_map_backup_retention" {
+  default     = 20
+  type        = number
+  description = "Number of full pre-cutover QuickCache shard maps retained as namespaced ConfigMaps."
+
+  validation {
+    condition     = var.quickcache_map_backup_retention >= 1 && var.quickcache_map_backup_retention <= 100 && floor(var.quickcache_map_backup_retention) == var.quickcache_map_backup_retention
+    error_message = "quickcache_map_backup_retention must be an integer between 1 and 100."
+  }
+}
+
+variable "quickcache_max_cache_age" {
+  default     = 36000000
+  type        = number
+  description = "Maximum age in seconds before a cached object ETag is revalidated."
+
+  validation {
+    condition     = var.quickcache_max_cache_age > 0 && floor(var.quickcache_max_cache_age) == var.quickcache_max_cache_age
+    error_message = "quickcache_max_cache_age must be a positive integer."
+  }
+}
+
+variable "quickcache_map_reload_interval" {
+  default     = 60
+  type        = number
+  description = "Seconds between shard-map reload checks in workload processes."
+
+  validation {
+    condition     = var.quickcache_map_reload_interval > 0 && floor(var.quickcache_map_reload_interval) == var.quickcache_map_reload_interval
+    error_message = "quickcache_map_reload_interval must be a positive integer."
+  }
+}
+
+variable "quickcache_cache_range_gets" {
+  default     = true
+  type        = bool
+  description = "Cache full objects when applications issue S3 byte-range GetObject requests."
+}
+
+variable "quickcache_cleanup_high_watermark" {
+  default     = 0.90
+  type        = number
+  description = "Start cache cleanup when filesystem utilization reaches this ratio."
+}
+
+variable "quickcache_cleanup_target_watermark" {
+  default     = 0.70
+  type        = number
+  description = "Remove least-recently-accessed objects until utilization reaches this ratio."
+}
+
+variable "quickcache_max_cache_files" {
+  default     = 500000000
+  type        = number
+  description = "Maximum used filesystem inode count before cache cleanup begins."
+
+  validation {
+    condition     = var.quickcache_max_cache_files > 0 && floor(var.quickcache_max_cache_files) == var.quickcache_max_cache_files
+    error_message = "quickcache_max_cache_files must be a positive integer."
+  }
+}
+
+variable "quickcache_values_override" {
+  default     = ""
+  type        = string
+  nullable    = false
+  description = "Additional OCI QuickCache Helm values in YAML format."
+}
+
 variable "create_lustre" { default = false }
 variable "create_lustre_pv" { default = true }
 variable "lustre_ad" { default = "" }
