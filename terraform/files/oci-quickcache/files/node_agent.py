@@ -25,6 +25,11 @@ from pathlib import Path
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
+from agent_common import (
+    enter_host_namespaces as _enter_host_namespaces,
+    read_configmap_json_objects,
+    write_json_atomic as _write_json_atomic,
+)
 from sharding import resolve_shard_mounts
 
 
@@ -116,29 +121,6 @@ def _node_mode() -> str:
     return mode
 
 
-def _enter_host_namespaces() -> None:
-    """Enter the host mount/network namespaces and use the mounted host root."""
-    # Open the host process root rather than the /host bind mount. After
-    # setns(), a file descriptor opened through /host retains the bind mount's
-    # view and can lose host submounts such as a late-mounted /mnt/nvme.
-    # /proc/1/root refers to the actual host root because the pod uses hostPID.
-    host_root_fd = os.open("/proc/1/root", os.O_RDONLY | os.O_DIRECTORY)
-    namespace_fds = [
-        os.open("/proc/1/ns/mnt", os.O_RDONLY),
-        os.open("/proc/1/ns/net", os.O_RDONLY),
-    ]
-    try:
-        for namespace_fd in namespace_fds:
-            os.setns(namespace_fd)
-        os.fchdir(host_root_fd)
-        os.chroot(".")
-        os.chdir("/")
-    finally:
-        os.close(host_root_fd)
-        for namespace_fd in namespace_fds:
-            os.close(namespace_fd)
-
-
 def _host_command(
     args: list[str],
     timeout: int = 120,
@@ -222,23 +204,6 @@ def _copy_runtime(host_runtime_root: str) -> None:
             os.replace(temporary, target)
         finally:
             temporary.unlink(missing_ok=True)
-
-
-def _write_json_atomic(host_path: str, value: dict) -> None:
-    path = Path("/host", host_path.lstrip("/"))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    serialized = json.dumps(value, indent=2, sort_keys=True)
-    try:
-        if path.read_text(encoding="utf-8") == serialized:
-            return
-    except OSError:
-        pass
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        temporary.write_text(serialized, encoding="utf-8")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _read_host_json(host_path: str) -> dict:
@@ -389,27 +354,19 @@ def _remove_stale_mounts(desired_uids: set[str]) -> None:
 
 def _read_state(core: client.CoreV1Api) -> tuple[dict, dict, dict, dict]:
     try:
-        configmap = core.read_namespaced_config_map(
+        return read_configmap_json_objects(
+            core,
             os.environ.get("STATE_CONFIGMAP_NAME", "oci-quickcache-state"),
             os.environ["POD_NAMESPACE"],
-        )
-    except ApiException as exc:
-        if exc.status == 404:
-            return {}, {}, {}, {}
-        raise
-    data = configmap.data or {}
-    values = tuple(
-        json.loads(data.get(key, "{}"))
-        for key in (
             "peers.json",
             "shard_map.json",
             "previous_shard_map.json",
             "rebalance.json",
         )
-    )
-    if not all(isinstance(value, dict) for value in values):
-        raise ValueError("QuickCache state fields must be JSON objects")
-    return values
+    except ApiException as exc:
+        if exc.status == 404:
+            return {}, {}, {}, {}
+        raise
 
 
 def _patch_status(

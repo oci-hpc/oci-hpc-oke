@@ -5,6 +5,10 @@ applications that call the S3-compatible `GetObject` API through boto3 or
 Botocore. It uses the existing local NVMe filesystem on selected OKE workers
 and exports each node's cache to the other cache nodes over NFSv4.
 
+For code ownership, upstream provenance, safety invariants, and focused
+maintainer tests, see
+[`terraform/files/oci-quickcache/UPSTREAM.md`](../terraform/files/oci-quickcache/UPSTREAM.md).
+
 QuickCache does not cache writes and is not a general POSIX filesystem. The
 initial OKE integration is intended for trusted workloads: the cache is shared
 and must not be treated as a tenant-isolation boundary.

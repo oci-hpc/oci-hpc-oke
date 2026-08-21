@@ -6,18 +6,29 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
 import time
-import uuid
 from pathlib import Path
 
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
+from rebalance import (
+    advance_staged_rebalance,
+    moved_shards as _moved_shards,
+    new_plan as _new_plan,
+    plan_members as _plan_members,
+)
 from sharding import rebalance_shards
+from state_store import (
+    backup_shard_map as _backup_shard_map,
+    empty_state as _empty_state,
+    load_state as _load_state,
+    map_digest as _map_digest,
+    write_state as _write_state,
+)
 
 
 logging.basicConfig(
@@ -28,17 +39,6 @@ logging.basicConfig(
 LOG = logging.getLogger("quickcache-controller")
 HEALTH_FILE = Path("/tmp/health/alive")
 READY_FILE = Path("/tmp/health/ready")
-
-
-def _empty_state() -> dict:
-    return {
-        "peers": {},
-        "active": {},
-        "pending": {},
-        "previous": {},
-        "rebalance": {},
-        "generation": 0,
-    }
 
 
 def _node_is_ready(node: client.V1Node) -> bool:
@@ -112,226 +112,6 @@ def _clear_stale_ready_labels(
                 )
 
 
-def _json_object(data: dict, key: str) -> dict:
-    try:
-        value = json.loads(data.get(key, "{}"))
-    except (TypeError, json.JSONDecodeError):
-        LOG.warning("QuickCache state field %s is invalid; ignoring it", key)
-        return {}
-    if not isinstance(value, dict):
-        LOG.warning("QuickCache state field %s is not an object; ignoring it", key)
-        return {}
-    return value
-
-
-def _load_state(
-    core: client.CoreV1Api, namespace: str, name: str
-) -> tuple[dict, str | None, dict[str, str]]:
-    try:
-        configmap = core.read_namespaced_config_map(name, namespace)
-    except ApiException as exc:
-        if exc.status == 404:
-            return _empty_state(), None, {}
-        raise
-    data = configmap.data or {}
-    try:
-        generation = max(0, int(data.get("generation", "0")))
-    except (TypeError, ValueError):
-        LOG.warning("QuickCache generation is invalid; resetting it")
-        generation = 0
-    state = {
-        "peers": _json_object(data, "peers.json"),
-        "active": _json_object(data, "shard_map.json"),
-        "pending": _json_object(data, "pending_shard_map.json"),
-        "previous": _json_object(data, "previous_shard_map.json"),
-        "rebalance": _json_object(data, "rebalance.json"),
-        "generation": generation,
-    }
-    return (
-        state,
-        configmap.metadata.resource_version,
-        dict(getattr(configmap.metadata, "annotations", None) or {}),
-    )
-
-
-def _write_state(
-    core: client.CoreV1Api,
-    namespace: str,
-    name: str,
-    state: dict,
-    resource_version: str | None,
-    annotations: dict[str, str],
-) -> None:
-    body = client.V1ConfigMap(
-        metadata=client.V1ObjectMeta(
-            name=name,
-            namespace=namespace,
-            labels={"app.kubernetes.io/name": "oci-quickcache"},
-            annotations=annotations,
-            resource_version=resource_version,
-        ),
-        data={
-            "peers.json": json.dumps(state["peers"], indent=2, sort_keys=True),
-            "shard_map.json": json.dumps(state["active"], indent=2, sort_keys=True),
-            "pending_shard_map.json": json.dumps(
-                state["pending"], indent=2, sort_keys=True
-            ),
-            "previous_shard_map.json": json.dumps(
-                state["previous"], indent=2, sort_keys=True
-            ),
-            "rebalance.json": json.dumps(
-                state["rebalance"], indent=2, sort_keys=True
-            ),
-            "generation": str(state["generation"]),
-            "updated_at": str(int(time.time())),
-        },
-    )
-    if resource_version:
-        core.replace_namespaced_config_map(name, namespace, body)
-    else:
-        core.create_namespaced_config_map(namespace, body)
-
-
-def _map_digest(shard_map: dict) -> str:
-    serialized = json.dumps(shard_map, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
-
-
-def _backup_shard_map(
-    core: client.CoreV1Api,
-    namespace: str,
-    state_name: str,
-    old_map: dict,
-    new_map: dict,
-    generation: int,
-    retention: int,
-    now: int,
-) -> None:
-    """Persist the complete pre-cutover map in a bounded ConfigMap history."""
-    if not old_map or old_map == new_map:
-        return
-    old_digest = _map_digest(old_map)
-    new_digest = _map_digest(new_map)
-    # The deterministic transition name makes retries idempotent if writing
-    # the live state later loses a resourceVersion race.
-    name = (
-        f"{state_name[:160]}-map-g{generation:08d}-"
-        f"{old_digest[:12]}-{new_digest[:12]}"
-    )
-    owner_id = hashlib.sha256(state_name.encode("utf-8")).hexdigest()[:16]
-    timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime(now))
-    body = client.V1ConfigMap(
-        metadata=client.V1ObjectMeta(
-            name=name,
-            namespace=namespace,
-            labels={
-                "app.kubernetes.io/name": "oci-quickcache",
-                "app.kubernetes.io/component": "shard-map-backup",
-                "oci-hpc-oke.oracle.com/state-backup-owner": owner_id,
-            },
-            annotations={
-                "oci-hpc-oke.oracle.com/quickcache-backup-created-at": str(now),
-                "oci-hpc-oke.oracle.com/quickcache-old-map-sha256": old_digest,
-                "oci-hpc-oke.oracle.com/quickcache-new-map-sha256": new_digest,
-            },
-        ),
-        data={
-            f"shard_map.{timestamp}.bak": json.dumps(
-                old_map, indent=2, sort_keys=True
-            ),
-            "generation": str(generation),
-            "created_at": str(now),
-        },
-    )
-    try:
-        core.create_namespaced_config_map(namespace, body)
-        LOG.info("created full shard-map backup %s", name)
-    except ApiException as exc:
-        if exc.status != 409:
-            raise
-        existing = core.read_namespaced_config_map(name, namespace)
-        backup_values = [
-            value
-            for key, value in (existing.data or {}).items()
-            if key.endswith(".bak")
-        ]
-        try:
-            existing_map = json.loads(backup_values[0])
-        except (IndexError, TypeError, json.JSONDecodeError) as invalid:
-            raise RuntimeError(
-                f"existing shard-map backup {name} is invalid"
-            ) from invalid
-        if (
-            len(backup_values) != 1
-            or not isinstance(existing_map, dict)
-            or _map_digest(existing_map) != old_digest
-        ):
-            raise RuntimeError(
-                f"existing shard-map backup {name} does not match cutover"
-            )
-
-    # Backup creation protects cutover; retention is best effort so an API
-    # deletion problem cannot keep a healthy cache permanently unbalanced.
-    try:
-        backups = core.list_namespaced_config_map(
-            namespace,
-            label_selector=(
-                "app.kubernetes.io/name=oci-quickcache,"
-                "app.kubernetes.io/component=shard-map-backup,"
-                f"oci-hpc-oke.oracle.com/state-backup-owner={owner_id}"
-            ),
-        ).items
-        backups.sort(
-            key=lambda item: (
-                int(
-                    (item.metadata.annotations or {}).get(
-                        "oci-hpc-oke.oracle.com/quickcache-backup-created-at", "0"
-                    )
-                ),
-                item.metadata.name,
-            )
-        )
-        for backup in backups[:-retention]:
-            core.delete_namespaced_config_map(backup.metadata.name, namespace)
-    except (ApiException, TypeError, ValueError):
-        LOG.warning("could not enforce shard-map backup retention", exc_info=True)
-
-
-def _moved_shards(old_map: dict, new_map: dict) -> list[dict[str, str]]:
-    return [
-        {"shard": str(shard), "source": str(source), "target": str(new_map[shard])}
-        for shard, source in sorted(old_map.items(), key=lambda item: int(item[0]))
-        if shard in new_map and source != new_map[shard]
-    ]
-
-
-def _new_plan(
-    generation: int,
-    mode: str,
-    active: dict,
-    pending: dict,
-    now: int,
-) -> dict:
-    plan_id = str(uuid.uuid4())
-    return {
-        "generation": generation,
-        "planId": plan_id,
-        "approvalToken": f"{generation}:{plan_id}",
-        "mode": mode,
-        "phase": "awaitingApproval" if mode == "manual" else "migrating",
-        "createdAt": now,
-        "moves": _moved_shards(active, pending),
-    }
-
-
-def _plan_members(plan: dict, member: str) -> set[str]:
-    return {
-        str(move.get(member))
-        for move in plan.get("moves", [])
-        if isinstance(move, dict) and move.get(member)
-    }
-
-
 def _migration_complete(
     core: client.CoreV1Api,
     enabled_label: str,
@@ -342,6 +122,18 @@ def _migration_complete(
     expected = _plan_members(plan, "source")
     if not expected:
         return True
+    statuses = _migration_statuses(core, enabled_label, status_annotation)
+    return all(
+        _status_matches(statuses.get(uid, {}), plan, phase)
+        for uid in expected
+    )
+
+
+def _migration_statuses(
+    core: client.CoreV1Api,
+    enabled_label: str,
+    status_annotation: str,
+) -> dict[str, dict]:
     statuses: dict[str, dict] = {}
     for node in core.list_node(label_selector=f"{enabled_label}=true").items:
         raw = (node.metadata.annotations or {}).get(status_annotation, "{}")
@@ -351,22 +143,22 @@ def _migration_complete(
             continue
         if isinstance(status, dict):
             statuses[str(node.metadata.uid)] = status
-    generation = int(plan["generation"])
-    plan_id = plan.get("planId")
-    for uid in expected:
-        status = statuses.get(uid, {})
-        try:
-            status_generation = int(status.get("generation", -1))
-        except (TypeError, ValueError):
-            return False
-        if not (
-            status_generation == generation
-            and status.get("planId") == plan_id
-            and status.get("phase") == phase
-            and status.get("status") == "succeeded"
-        ):
-            return False
-    return True
+    return statuses
+
+
+def _status_matches(status: dict, plan: dict, phase: str) -> bool:
+    try:
+        generation_matches = int(status.get("generation", -1)) == int(
+            plan["generation"]
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (
+        generation_matches
+        and status.get("planId") == plan.get("planId")
+        and status.get("phase") == phase
+        and status.get("status") == "succeeded"
+    )
 
 
 def _migration_estimate(
@@ -384,33 +176,19 @@ def _migration_estimate(
         )
         for uid in expected
     }
-    statuses: dict[str, dict] = {}
-    for node in core.list_node(label_selector=f"{enabled_label}=true").items:
-        raw = (node.metadata.annotations or {}).get(status_annotation, "{}")
-        try:
-            status = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(status, dict):
-            statuses[str(node.metadata.uid)] = status
+    statuses = _migration_statuses(core, enabled_label, status_annotation)
 
     per_source = {}
     for uid in sorted(expected):
         status = statuses.get(uid, {})
         try:
-            matching = (
-                int(status.get("generation", -1)) == int(plan["generation"])
-                and status.get("planId") == plan.get("planId")
-                and status.get("phase") == "estimate"
-                and status.get("status") == "succeeded"
-            )
             files = int(status.get("files", 0))
             size = int(status.get("bytes", 0))
             shards = int(status.get("shards", 0))
         except (TypeError, ValueError):
             return None
         if (
-            not matching
+            not _status_matches(status, plan, "estimate")
             or min(files, size, shards) < 0
             or shards != expected_shards[uid]
         ):
@@ -439,93 +217,29 @@ def _staged_rebalance(
     fallback_grace: int,
     now: int,
 ) -> None:
-    active = state["active"]
-    plan = state["rebalance"]
-
-    # Losing an active owner is failover, not a scale-out rebalance. There is
-    # no healthy source from which to stage data, so availability wins.
-    if active and not set(active.values()).issubset(peers):
-        LOG.warning("an active cache owner disappeared; applying immediate failover")
-        state["generation"] += 1
-        state["active"] = desired
-        state["pending"] = {}
-        state["previous"] = {}
-        state["rebalance"] = {}
-        return
-
-    if plan:
-        phase = plan.get("phase")
-        if phase in {"awaitingApproval", "migrating"} and not _plan_members(
-            plan, "target"
-        ).issubset(peers):
-            LOG.warning("a pending cache owner disappeared; cancelling staged rebalance")
-            state["pending"] = {}
-            state["rebalance"] = {}
-            return
-
-        generation = str(plan.get("generation", ""))
-        approved = annotations.get(approval_annotation) == plan.get("approvalToken")
-        estimate = None
-        if phase == "awaitingApproval":
-            estimate = _migration_estimate(
-                core, enabled_label, status_annotation, plan
-            )
-            if estimate is not None and plan.get("estimate") != estimate:
-                plan["estimate"] = estimate
-        if phase == "awaitingApproval" and (
-            mode == "automatic" or (approved and estimate is not None)
-        ):
-            plan["phase"] = "migrating"
-            plan["approvedAt"] = now
-            phase = "migrating"
-            LOG.info("started QuickCache rebalance generation %s", generation)
-
-        if phase == "migrating" and _migration_complete(
-            core, enabled_label, status_annotation, plan, "copy"
-        ):
-            # Cut over only after every source reports a successful copy.
-            state["previous"] = active
-            state["active"] = state["pending"]
-            state["pending"] = {}
-            plan["phase"] = "fallback"
-            plan["activatedAt"] = now
-            plan["cleanupAfter"] = now + fallback_grace
-            LOG.info("activated warm QuickCache rebalance generation %s", generation)
-            return
-
-        if phase == "fallback":
-            if not _plan_members(plan, "source").issubset(peers):
-                LOG.warning("a previous owner disappeared; ending fallback early")
-                state["previous"] = {}
-                state["rebalance"] = {}
-            elif now >= int(plan.get("cleanupAfter", now + fallback_grace)):
-                plan["phase"] = "cleanup"
-                plan["cleanupStartedAt"] = now
-                LOG.info("started cleanup for QuickCache rebalance %s", generation)
-            return
-
-        if phase == "cleanup" and _migration_complete(
-            core, enabled_label, status_annotation, plan, "cleanup"
-        ):
-            state["previous"] = {}
-            state["rebalance"] = {}
-            LOG.info("completed QuickCache rebalance generation %s", generation)
-        return
-
-    if desired == active:
-        return
-    state["generation"] += 1
-    state["pending"] = desired
-    state["previous"] = {}
-    state["rebalance"] = _new_plan(
-        state["generation"], mode, active, desired, now
+    advance_staged_rebalance(
+        state=state,
+        peers=peers,
+        desired=desired,
+        mode=mode,
+        approval_annotation=approval_annotation,
+        annotations=annotations,
+        fallback_grace=fallback_grace,
+        now=now,
+        migration_complete=lambda plan, phase: _migration_complete(
+            core,
+            enabled_label,
+            status_annotation,
+            plan,
+            phase,
+        ),
+        migration_estimate=lambda plan: _migration_estimate(
+            core,
+            enabled_label,
+            status_annotation,
+            plan,
+        ),
     )
-    # An empty move set only occurs for initialization-like map expansion and
-    # has no warm data to preserve.
-    if not state["rebalance"]["moves"]:
-        state["active"] = desired
-        state["pending"] = {}
-        state["rebalance"] = {}
 
 
 def reconcile(core: client.CoreV1Api) -> None:

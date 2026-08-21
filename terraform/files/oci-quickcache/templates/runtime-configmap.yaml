@@ -6,25 +6,4 @@ metadata:
   labels:
     {{- include "oci-quickcache.labels" . | nindent 4 }}
 data:
-  controller.py: |
-{{ .Files.Get "files/controller.py" | indent 4 }}
-  healthcheck.py: |
-{{ .Files.Get "files/healthcheck.py" | indent 4 }}
-  node_agent.py: |
-{{ .Files.Get "files/node_agent.py" | indent 4 }}
-  migration_agent.py: |
-{{ .Files.Get "files/migration_agent.py" | indent 4 }}
-  migrate_shards.py: |
-{{ .Files.Get "files/migrate_shards.py" | indent 4 }}
-  host_setup.sh: |
-{{ .Files.Get "files/host_setup.sh" | indent 4 }}
-  host_teardown.sh: |
-{{ .Files.Get "files/host_teardown.sh" | indent 4 }}
-  sharding.py: |
-{{ .Files.Get "files/sharding.py" | indent 4 }}
-  cache_paths.py: |
-{{ .Files.Get "files/cache_paths.py" | indent 4 }}
-  cleanup.py: |
-{{ .Files.Get "files/cleanup.py" | indent 4 }}
-  sitecustomize.py: |
-{{ .Files.Get "files/sitecustomize.py" | indent 4 }}
+{{ (.Files.Glob "files/*").AsConfig | indent 2 }}

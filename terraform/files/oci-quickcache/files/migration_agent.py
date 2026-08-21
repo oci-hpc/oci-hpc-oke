@@ -19,6 +19,13 @@ from pathlib import Path
 
 from kubernetes import client, config
 
+from agent_common import (
+    enter_host_namespaces as _enter_host_namespaces,
+    patch_node_json_annotation,
+    read_configmap_json_objects,
+    write_json_atomic as _write_json_atomic,
+)
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,60 +36,23 @@ LOG = logging.getLogger("quickcache-migration-agent")
 STOP_EVENT = threading.Event()
 
 
-def _enter_host_namespaces() -> None:
-    host_root_fd = os.open("/proc/1/root", os.O_RDONLY | os.O_DIRECTORY)
-    namespace_fds = [
-        os.open("/proc/1/ns/mnt", os.O_RDONLY),
-        os.open("/proc/1/ns/net", os.O_RDONLY),
-    ]
-    try:
-        for namespace_fd in namespace_fds:
-            os.setns(namespace_fd)
-        os.fchdir(host_root_fd)
-        os.chroot(".")
-        os.chdir("/")
-    finally:
-        os.close(host_root_fd)
-        for namespace_fd in namespace_fds:
-            os.close(namespace_fd)
-
-
-def _write_json_atomic(host_path: str, value: dict) -> None:
-    path = Path("/host", host_path.lstrip("/"))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        temporary.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def _read_state(core: client.CoreV1Api) -> tuple[dict, dict, dict]:
-    configmap = core.read_namespaced_config_map(
+    return read_configmap_json_objects(
+        core,
         os.environ["STATE_CONFIGMAP_NAME"],
         os.environ["POD_NAMESPACE"],
-    )
-    data = configmap.data or {}
-    return (
-        json.loads(data.get("peers.json", "{}")),
-        json.loads(data.get("rebalance.json", "{}")),
-        json.loads(data.get("pending_shard_map.json", "{}")),
+        "peers.json",
+        "rebalance.json",
+        "pending_shard_map.json",
     )
 
 
 def _patch_status(core: client.CoreV1Api, value: dict) -> None:
-    core.patch_node(
+    patch_node_json_annotation(
+        core,
         os.environ["NODE_NAME"],
-        {
-            "metadata": {
-                "annotations": {
-                    os.environ["MIGRATION_STATUS_ANNOTATION"]: json.dumps(
-                        value, sort_keys=True, separators=(",", ":")
-                    )
-                }
-            }
-        },
+        os.environ["MIGRATION_STATUS_ANNOTATION"],
+        value,
     )
 
 

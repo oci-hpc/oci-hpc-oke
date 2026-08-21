@@ -31,22 +31,24 @@ func TestQuickCacheRuntimeDoesNotUseRawObjectKeysAsPaths(t *testing.T) {
 
 func TestQuickCacheUsesControllerOwnedDynamicState(t *testing.T) {
 	controller := readRepositoryFile(t, "terraform", "files", "oci-quickcache", "files", "controller.py")
+	stateStore := readRepositoryFile(t, "terraform", "files", "oci-quickcache", "files", "state_store.py")
 	chartTemplates := readRepositoryFile(t, "terraform", "files", "oci-quickcache", "templates", "runtime-configmap.yaml")
 
-	require.Contains(t, controller, "create_namespaced_config_map")
-	require.Contains(t, controller, "replace_namespaced_config_map")
+	require.Contains(t, controller, "load_state as _load_state")
+	require.Contains(t, stateStore, "create_namespaced_config_map")
+	require.Contains(t, stateStore, "replace_namespaced_config_map")
 	require.False(t, strings.Contains(chartTemplates, "shard_map.json"), "Helm must not overwrite the live shard map")
 }
 
 func TestQuickCacheStagedRebalanceCopiesBeforeCutover(t *testing.T) {
-	controller := readRepositoryFile(t, "terraform", "files", "oci-quickcache", "files", "controller.py")
+	rebalance := readRepositoryFile(t, "terraform", "files", "oci-quickcache", "files", "rebalance.py")
 	migrator := readRepositoryFile(t, "terraform", "files", "oci-quickcache", "files", "migrate_shards.py")
 	sitecustomize := readRepositoryFile(t, "terraform", "files", "oci-quickcache", "files", "sitecustomize.py")
 	nodeAgentTemplate := readRepositoryFile(t, "terraform", "files", "oci-quickcache", "templates", "node-agent.yaml")
 
-	require.Contains(t, controller, `plan["phase"] = "migrating"`)
-	require.Contains(t, controller, `state["previous"] = active`)
-	require.Contains(t, controller, `state["active"] = state["pending"]`)
+	require.Contains(t, rebalance, `plan["phase"] = "migrating"`)
+	require.Contains(t, rebalance, `state["previous"] = active`)
+	require.Contains(t, rebalance, `state["active"] = state["pending"]`)
 	require.Contains(t, migrator, `if phase == "cleanup"`)
 	require.Contains(t, migrator, `_coverage_complete`)
 	require.Contains(t, sitecustomize, `HIT_PREVIOUS`)
@@ -55,6 +57,8 @@ func TestQuickCacheStagedRebalanceCopiesBeforeCutover(t *testing.T) {
 
 func TestQuickCacheRetainsFullMapBackupsAndEstimatesManualMigration(t *testing.T) {
 	controller := readRepositoryFile(t, "terraform", "files", "oci-quickcache", "files", "controller.py")
+	rebalance := readRepositoryFile(t, "terraform", "files", "oci-quickcache", "files", "rebalance.py")
+	stateStore := readRepositoryFile(t, "terraform", "files", "oci-quickcache", "files", "state_store.py")
 	migrator := readRepositoryFile(t, "terraform", "files", "oci-quickcache", "files", "migrate_shards.py")
 	migrationAgent := readRepositoryFile(t, "terraform", "files", "oci-quickcache", "files", "migration_agent.py")
 	role := readRepositoryFile(t, "terraform", "files", "oci-quickcache", "templates", "role.yaml")
@@ -63,12 +67,12 @@ func TestQuickCacheRetainsFullMapBackupsAndEstimatesManualMigration(t *testing.T
 	benchmarkKeys := readRepositoryFile(t, "manifests", "quickcache", "prepare-benchmark-keys.py")
 
 	require.Contains(t, controller, "_backup_shard_map(")
-	require.Contains(t, controller, `f"shard_map.{timestamp}.bak"`)
+	require.Contains(t, stateStore, `f"shard_map.{timestamp}.bak"`)
 	require.Contains(t, controller, "MAP_BACKUP_RETENTION")
 	require.Contains(t, role, `"delete"`)
 	require.Contains(t, migrator, `if phase == "estimate"`)
 	require.Contains(t, migrationAgent, `if phase_name == "awaitingApproval"`)
-	require.Contains(t, controller, `plan["estimate"] = estimate`)
+	require.Contains(t, rebalance, `plan["estimate"] = estimate`)
 	require.Contains(t, benchmarkRunner, "QC_BASELINE_AGGREGATE_GIB_S")
 	require.Contains(t, benchmarkReport, `checks["minimum_baseline_parity"]`)
 	require.Contains(t, benchmarkReport, `checks["expected_cache_owner_coverage"]`)
@@ -116,10 +120,10 @@ func TestQuickCacheHostSetupRetriesAndReportsFailures(t *testing.T) {
 }
 
 func TestQuickCacheEntersTheActualHostRoot(t *testing.T) {
-	nodeAgent := readRepositoryFile(t, "terraform", "files", "oci-quickcache", "files", "node_agent.py")
+	agentCommon := readRepositoryFile(t, "terraform", "files", "oci-quickcache", "files", "agent_common.py")
 
-	require.Contains(t, nodeAgent, `os.open("/proc/1/root", os.O_RDONLY | os.O_DIRECTORY)`)
-	require.NotContains(t, nodeAgent, `host_root_fd = os.open("/host"`)
+	require.Contains(t, agentCommon, `os.open("/proc/1/root", os.O_RDONLY | os.O_DIRECTORY)`)
+	require.NotContains(t, agentCommon, `host_root_fd = os.open("/host"`)
 }
 
 func TestQuickCachePublishesWorkloadMountPaths(t *testing.T) {
@@ -138,7 +142,7 @@ func TestQuickCacheHelmWaitsForDataPlaneReadiness(t *testing.T) {
 
 	require.Contains(t, readinessJob, `"helm.sh/hook": post-install,post-upgrade`)
 	require.Contains(t, readinessJob, `command: ["uv", "run", "/runtime/healthcheck.py"]`)
-	require.Contains(t, runtimeConfig, `healthcheck.py:`)
+	require.Contains(t, runtimeConfig, `.Files.Glob "files/*"`)
 	require.Contains(t, role, `resources: ["deployments", "daemonsets"]`)
 }
 
