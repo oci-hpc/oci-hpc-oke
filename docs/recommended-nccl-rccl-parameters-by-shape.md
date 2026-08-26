@@ -58,6 +58,32 @@ NCCL_SOCKET_IFNAME=eth0
 NCCL_IGNORE_CPU_AFFINITY=1
 ```
 
+## BM.GPU.RTXPRO.8
+
+```
+NCCL_MIN_NCHANNELS=8
+NCCL_ALGO=Tree
+NCCL_DEBUG=WARN
+NCCL_CUMEM_ENABLE=0
+NCCL_IB_SPLIT_DATA_ON_QPS=0
+NCCL_IB_QPS_PER_CONNECTION=1
+NCCL_IB_GID_INDEX=3
+NCCL_IB_HCA==mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_6,mlx5_7,mlx5_8,mlx5_9
+NCCL_IB_TC=41
+NCCL_IB_SL=0
+NCCL_IB_TIMEOUT=22
+NCCL_NET_PLUGIN=none
+NCCL_SOCKET_IFNAME=eth0
+NCCL_IGNORE_CPU_AFFINITY=1
+```
+
+> [!NOTE]
+> For `all_reduce`, force the Tree algorithm with `NCCL_ALGO=Tree` (shown above).
+> Combined with the full data-HCA list and `NCCL_MIN_NCHANNELS=8`, Tree reaches
+> ~34 GB/s bus bandwidth at 8 GiB on 2-4 nodes, versus ~21 GB/s with the default
+> Ring algorithm. Validated on the Kueue MPIJob manifest
+> ([`BM.GPU.RTXPRO.8.yaml`](../manifests/nccl-tests/kueue/BM.GPU.RTXPRO.8.yaml)).
+
 ## BM.GPU.B4.8
 
 ```
