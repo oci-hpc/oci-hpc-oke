@@ -88,7 +88,11 @@ func TestQuickCacheResourceManagerWorkerPoolsAreSelectable(t *testing.T) {
 	workerPools := schema[start : start+endOffset]
 
 	require.Contains(t, workerPools, "type: enum")
-	require.Contains(t, workerPools, "allowMultiple: true")
+	// Resource Manager requires allowMultiple under additionalProps. Keeping it
+	// at the enum's top level makes ORM serialize a single selection as a scalar,
+	// which Terraform cannot parse for the set(string) variables.
+	require.Equal(t, 2, strings.Count(workerPools, "    additionalProps:\n      allowMultiple: true"))
+	require.NotContains(t, workerPools, "\n    allowMultiple: true")
 	for _, pool := range []string{"oke-gpu", "oke-rdma", "oke-gmc", "oke-cpu"} {
 		require.Contains(t, workerPools, "- "+pool)
 	}

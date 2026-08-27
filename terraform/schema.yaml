@@ -1308,7 +1308,8 @@ variables:
       - oke-rdma
       - oke-gmc
       - oke-cpu
-    allowMultiple: true
+    additionalProps:
+      allowMultiple: true
     required: false
     visible: ${install_quickcache}
   quickcache_client_worker_pools:
@@ -1320,7 +1321,8 @@ variables:
       - oke-rdma
       - oke-gmc
       - oke-cpu
-    allowMultiple: true
+    additionalProps:
+      allowMultiple: true
     required: false
     visible: ${install_quickcache}
   quickcache_access_mode:
