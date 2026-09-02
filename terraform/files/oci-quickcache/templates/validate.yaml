@@ -44,6 +44,9 @@
 {{- if not (regexMatch `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` .Values.cache.cacheDirName) -}}
 {{- fail "cache.cacheDirName must be one safe path component" -}}
 {{- end -}}
+{{- if not (has .Values.cache.pathLayout (list "friendly" "hashed")) -}}
+{{- fail "cache.pathLayout must be friendly or hashed" -}}
+{{- end -}}
 
 {{- $virtualShards := float64 .Values.controller.virtualShards -}}
 {{- $virtualShardInteger := int $virtualShards -}}

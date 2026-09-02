@@ -81,6 +81,10 @@ cache:
   hostConfigRoot: /var/lib/ociqc/config
   hostLogRoot: /var/lib/ociqc/logs
   cacheDirName: OCI_QC_Cache
+  # friendly preserves the recognizable bucket/object-key hierarchy under a
+  # versioned v2 subtree. hashed retains the original hash-only OKE layout.
+  # Both modes read the alternate layout for warm-cache compatibility.
+  pathLayout: friendly
   # trustedShared preserves the existing arbitrary-UID behavior. sharedGroup
   # restricts cache and audit writes to workloads using access.sharedGid.
   access:

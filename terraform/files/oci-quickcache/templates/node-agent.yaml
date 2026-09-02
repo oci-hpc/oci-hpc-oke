@@ -113,6 +113,8 @@ spec:
               value: {{ .Values.cache.hostLogRoot | quote }}
             - name: CACHE_DIR_NAME
               value: {{ .Values.cache.cacheDirName | quote }}
+            - name: CACHE_PATH_LAYOUT
+              value: {{ .Values.cache.pathLayout | quote }}
             - name: ACCESS_MODE
               value: {{ .Values.cache.access.mode | quote }}
             - name: SHARED_GID

@@ -102,6 +102,39 @@ Automatic and manual modes support at most 4,096 virtual shards so their
 active, pending, previous, and migration-plan state remains below the
 Kubernetes ConfigMap size limit. The default is 1,024.
 
+Choose the on-disk object layout with:
+
+```hcl
+quickcache_cache_path_layout = "friendly" # friendly (default) or hashed
+```
+
+The `friendly` layout keeps the recognizable bucket/object-key hierarchy under
+a versioned `v2` subtree. For example, an object named
+`models/llama/checkpoints/model 001.bin` is stored as:
+
+```text
+OCI_QC_Cache/0613/v2/sa-saopaulo-1/example-bucket/
+  models/llama/checkpoints/model%20001.bin.__qc_82bf681a0043708eb54797aa
+```
+
+Each key component is percent-encoded before filesystem use. Empty, dot, and
+parent-directory components are represented safely; long components and paths
+are bounded. The 96-bit suffix comes from the complete resource identity hash,
+which includes endpoint scope, bucket, key, and optional version ID. It avoids
+collisions while leaving normal object names readable. Exceptionally long keys
+use a bounded `__long_keys__` fallback with a recognizable prefix and the same
+hash suffix.
+
+`hashed` retains the original OKE write path. Regardless of the selected write
+layout, the runtime also checks the alternate layout on a miss. This means an
+upgrade to `friendly` continues serving existing hash-only cache entries, and
+switching this runtime's setting back to `hashed` continues serving friendly
+entries. An older QuickCache release that predates the `v2` reader cannot read
+friendly entries. Compatibility hits are recorded as `HIT_COMPAT`,
+`HIT_RANGE_COMPAT`, or their `*_PREVIOUS_COMPAT` variants. Existing entries are
+not renamed or duplicated automatically; new network misses are written in the
+selected layout.
+
 Keep `nvme_raid_enabled = true`. After `terraform apply`, check the deployment:
 
 ```sh

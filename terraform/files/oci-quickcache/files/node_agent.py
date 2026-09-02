@@ -107,6 +107,8 @@ def _validate_configuration() -> None:
     cache_name = os.environ["CACHE_DIR_NAME"]
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", cache_name):
         raise ValueError("CACHE_DIR_NAME must be one safe path component")
+    if os.environ["CACHE_PATH_LAYOUT"] not in {"friendly", "hashed"}:
+        raise ValueError("CACHE_PATH_LAYOUT must be friendly or hashed")
     if os.environ["ACCESS_MODE"] not in {"trustedShared", "sharedGroup"}:
         raise ValueError("ACCESS_MODE must be trustedShared or sharedGroup")
     shared_gid = _parse_positive_integer(os.environ["SHARED_GID"], "SHARED_GID")
@@ -448,6 +450,7 @@ def reconcile(core: client.CoreV1Api, node_uid: str) -> None:
                 "/etc/ociqc/previous_shard_map.json"
             ),
             "OCI_QC_CACHE_DIR_NAME": os.environ["CACHE_DIR_NAME"],
+            "OCI_QC_CACHE_PATH_LAYOUT": os.environ["CACHE_PATH_LAYOUT"],
             "OCI_QC_LOG_DIR": "/var/log/ociqc",
             "OCI_QC_CACHE_DIRECTORY_MODE": (
                 "2770" if os.environ["ACCESS_MODE"] == "sharedGroup" else "0777"

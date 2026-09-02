@@ -10,7 +10,9 @@ The QuickCache runtime in this chart is derived from
 The OKE port keeps the S3 `GetObject` interception model, fixed virtual shards,
 atomic cache writes, cache-age checks, range support, and disk-pressure cleanup.
 Cluster membership, peer mounting, and shard-map ownership were rewritten for
-Kubernetes. Raw S3 keys are not used as filesystem paths in this port.
+Kubernetes. The default `friendly` cache layout preserves the recognizable S3
+bucket/key hierarchy using safe per-component encoding and a resource-hash
+suffix. The original OKE hash-only layout remains readable and selectable.
 
 The OKE port also adds active peer I/O probes, node-persistent audit files,
 optional numeric shared-group permissions, a client-only agent for dedicated
@@ -39,8 +41,10 @@ Keep changes inside the narrowest module that owns the behavior:
 These are design constraints, not incidental implementation details:
 
 1. QuickCache never creates, partitions, formats, or rebuilds NVMe storage.
-2. Raw bucket/object keys never become filesystem paths; cache paths use a
-   bounded hash.
+2. Bucket/object-key components are safely encoded and bounded before becoming
+   filesystem components. A hash suffix includes endpoint, bucket, key, and
+   optional version identity; direct traversal and symlinked directories are
+   rejected.
 3. A cache body is published with an atomic rename only after the complete
    expected response has been written.
 4. The active shard map does not change during a staged copy. Cutover happens

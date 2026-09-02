@@ -34,6 +34,7 @@ locals {
       maxAgeSeconds     = var.quickcache_max_cache_age
       mapReloadInterval = var.quickcache_map_reload_interval
       cacheRangeGets    = var.quickcache_cache_range_gets
+      pathLayout        = var.quickcache_cache_path_layout
       access = {
         mode      = var.quickcache_access_mode
         sharedGid = var.quickcache_shared_gid

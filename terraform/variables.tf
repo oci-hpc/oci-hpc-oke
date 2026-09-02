@@ -435,6 +435,17 @@ variable "quickcache_cache_range_gets" {
   description = "Cache full objects when applications issue S3 byte-range GetObject requests."
 }
 
+variable "quickcache_cache_path_layout" {
+  default     = "friendly"
+  type        = string
+  description = "On-disk QuickCache object layout. friendly preserves an encoded bucket/key hierarchy; hashed retains the original OKE format. Both read the alternate format for compatibility."
+
+  validation {
+    condition     = contains(["friendly", "hashed"], var.quickcache_cache_path_layout)
+    error_message = "quickcache_cache_path_layout must be friendly or hashed."
+  }
+}
+
 variable "quickcache_cleanup_high_watermark" {
   default     = 0.90
   type        = number

@@ -184,6 +184,42 @@ class BodyCompatibilityTests(unittest.TestCase):
 
 
 class CacheFilesystemTests(unittest.TestCase):
+    def test_object_candidates_include_friendly_and_legacy_paths_on_both_owners(self):
+        client = SimpleNamespace(
+            meta=SimpleNamespace(
+                endpoint_url="https://namespace.example",
+                region_name="test-region",
+            )
+        )
+        active_map = {str(index): "/mounts/active" for index in range(16)}
+        previous_map = {str(index): "/mounts/previous" for index in range(16)}
+
+        def fake_stat(path):
+            return SimpleNamespace(st_dev=1 if str(path) == "/" else 2)
+
+        with (
+            mock.patch.object(sitecustomize, "CACHE_PATH_LAYOUT", "friendly"),
+            mock.patch.object(
+                sitecustomize,
+                "_refresh_maps",
+                return_value=(active_map, previous_map),
+            ),
+            mock.patch.object(sitecustomize.os, "stat", side_effect=fake_stat),
+        ):
+            write_path, candidates, digest, shard = sitecustomize._object_candidates(
+                client, "bucket", "models/checkpoint.bin", None
+            )
+
+        self.assertIn("/mounts/active/OCI_QC_Cache/", str(write_path))
+        self.assertIn("/v2/test-region/bucket/models/checkpoint.bin.__qc_", str(write_path))
+        self.assertEqual(
+            [(previous, compatibility) for _, previous, compatibility in candidates],
+            [(False, False), (True, False), (False, True), (True, True)],
+        )
+        self.assertEqual(len(digest), 64)
+        self.assertGreaterEqual(shard, 0)
+        self.assertLess(shard, 16)
+
     def test_cache_directories_are_shared_writable(self):
         with tempfile.TemporaryDirectory() as directory:
             cache_root = Path(directory) / sitecustomize.CACHE_DIR_NAME
@@ -203,6 +239,20 @@ class CacheFilesystemTests(unittest.TestCase):
             # macOS may clear setgid on directories owned by another group;
             # the portable contract here is group-only rwx permissions.
             self.assertEqual(path.parent.stat().st_mode & 0o777, 0o770)
+
+    def test_cache_directory_creation_rejects_symlinked_key_component(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache_root = root / sitecustomize.CACHE_DIR_NAME
+            outside = root / "outside"
+            cache_root.mkdir()
+            outside.mkdir()
+            (cache_root / "0001").symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaisesRegex(OSError, "unsafe cache directory"):
+                sitecustomize._ensure_cache_parent(
+                    cache_root / "0001" / "v2" / "region" / "bucket" / "object"
+                )
 
     def test_audit_log_is_append_locked_and_uses_configured_mode(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -258,9 +308,19 @@ class CacheFilesystemTests(unittest.TestCase):
             mock.patch.object(sitecustomize, "_ORIGINAL_CALL", original_call),
             mock.patch.object(
                 sitecustomize,
-                "_object_location",
+                "_object_candidates",
                 return_value=(
                     Path("/proc") / sitecustomize.CACHE_DIR_NAME / "0001" / "object",
+                    (
+                        (
+                            Path("/proc")
+                            / sitecustomize.CACHE_DIR_NAME
+                            / "0001"
+                            / "object",
+                            False,
+                            False,
+                        ),
+                    ),
                     "digest",
                     1,
                 ),
@@ -321,13 +381,16 @@ class CacheFilesystemTests(unittest.TestCase):
                 ),
                 mock.patch.object(
                     sitecustomize,
-                    "_object_location",
-                    return_value=(Path(directory) / "new-owner", "digest", 7),
-                ),
-                mock.patch.object(
-                    sitecustomize,
-                    "_previous_object_location",
-                    return_value=previous,
+                    "_object_candidates",
+                    return_value=(
+                        Path(directory) / "new-owner",
+                        (
+                            (Path(directory) / "new-owner", False, False),
+                            (previous, True, False),
+                        ),
+                        "digest",
+                        7,
+                    ),
                 ),
                 mock.patch.object(sitecustomize, "_log", side_effect=record_log),
             ):
@@ -340,6 +403,53 @@ class CacheFilesystemTests(unittest.TestCase):
             self.assertEqual(response["Body"].read(), b"warm-data")
             response["Body"].close()
             self.assertIn("HIT_PREVIOUS", reasons)
+
+    def test_legacy_hashed_entry_remains_warm_in_friendly_layout(self):
+        client = SimpleNamespace(
+            meta=SimpleNamespace(
+                service_model=SimpleNamespace(service_name="s3"),
+                endpoint_url="https://namespace.example",
+                region_name="test-region",
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            legacy = Path(directory) / "legacy-hashed-object"
+            legacy.write_bytes(b"warm-legacy-data")
+            reasons = []
+
+            def record_log(_path, _resource, reason, *_args):
+                reasons.append(reason)
+
+            with (
+                mock.patch.object(
+                    sitecustomize,
+                    "_ORIGINAL_CALL",
+                    side_effect=AssertionError("Object Storage must not be called"),
+                ),
+                mock.patch.object(
+                    sitecustomize,
+                    "_object_candidates",
+                    return_value=(
+                        Path(directory) / "friendly-object",
+                        (
+                            (Path(directory) / "friendly-object", False, False),
+                            (legacy, False, True),
+                        ),
+                        "digest",
+                        7,
+                    ),
+                ),
+                mock.patch.object(sitecustomize, "_log", side_effect=record_log),
+            ):
+                response = sitecustomize._patched_call(
+                    client,
+                    "GetObject",
+                    {"Bucket": "bucket", "Key": "path/object"},
+                )
+
+            self.assertEqual(response["Body"].read(), b"warm-legacy-data")
+            response["Body"].close()
+            self.assertIn("HIT_COMPAT", reasons)
 
     def test_cold_range_prefetch_exception_reissues_original_range(self):
         class FailingBody:
@@ -380,8 +490,13 @@ class CacheFilesystemTests(unittest.TestCase):
                 mock.patch.object(sitecustomize, "_ORIGINAL_CALL", original_call),
                 mock.patch.object(
                     sitecustomize,
-                    "_object_location",
-                    return_value=(cache_path, "digest", 1),
+                    "_object_candidates",
+                    return_value=(
+                        cache_path,
+                        ((cache_path, False, False),),
+                        "digest",
+                        1,
+                    ),
                 ),
                 mock.patch.object(sitecustomize, "_log"),
             ):

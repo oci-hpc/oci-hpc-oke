@@ -16,7 +16,13 @@ from urllib.parse import urlparse
 
 import botocore.client
 
-from cache_paths import cache_path, shard_for_resource
+from cache_paths import (
+    FRIENDLY_LAYOUT,
+    HASHED_LAYOUT,
+    SUPPORTED_LAYOUTS,
+    cache_path_candidates,
+    shard_for_resource,
+)
 
 
 CONFIG_PATH = Path(os.environ.get("OCI_QC_ENV_PATH", "/etc/ociqc/env.json"))
@@ -43,6 +49,16 @@ PREVIOUS_SHARD_MAP_FILE = Path(
 CACHE_DIR_NAME = os.environ.get(
     "OCI_QC_CACHE_DIR_NAME", CONFIG.get("OCI_QC_CACHE_DIR_NAME", "OCI_QC_Cache")
 )
+CACHE_PATH_LAYOUT = str(
+    os.environ.get(
+        "OCI_QC_CACHE_PATH_LAYOUT",
+        CONFIG.get("OCI_QC_CACHE_PATH_LAYOUT", FRIENDLY_LAYOUT),
+    )
+).lower()
+if CACHE_PATH_LAYOUT not in SUPPORTED_LAYOUTS:
+    # Never break an application import because a host config was edited by
+    # hand. The node agent validates generated values before publishing Ready.
+    CACHE_PATH_LAYOUT = HASHED_LAYOUT
 MAX_CACHE_AGE = int(
     os.environ.get("OCI_QC_MAX_CACHE_AGE", CONFIG.get("OCI_QC_MAX_CACHE_AGE", 36000000))
 )
@@ -179,34 +195,41 @@ def _endpoint_scope(client) -> str:
     return endpoint.rstrip("/").lower()
 
 
-def _object_location(
+def _paths_for_map(
     client,
     bucket: str,
     key: str,
     version_id: str | None,
-) -> tuple[Path | None, str, int]:
-    shard_map = _refresh_map()
-    if not shard_map:
-        return None, "", 0
+    owner_map: dict[str, str],
+    shard_count: int,
+) -> tuple[tuple[Path, ...], str, int]:
     shard, digest = shard_for_resource(
         bucket,
         key,
-        len(shard_map),
+        shard_count,
         version_id,
         _endpoint_scope(client),
     )
-    mount_path = shard_map.get(str(shard))
+    mount_path = owner_map.get(str(shard))
     if not mount_path:
-        return None, digest, shard
+        return (), digest, shard
     try:
         if os.stat(mount_path).st_dev == os.stat("/").st_dev:
-            return None, digest, shard
+            return (), digest, shard
     except OSError:
-        return None, digest, shard
+        return (), digest, shard
     return (
-        Path(
-            cache_path(
-                mount_path, CACHE_DIR_NAME, shard, _region(client), bucket, digest
+        tuple(
+            Path(path)
+            for path in cache_path_candidates(
+                mount_path,
+                CACHE_DIR_NAME,
+                shard,
+                _region(client),
+                bucket,
+                key,
+                digest,
+                CACHE_PATH_LAYOUT,
             )
         ),
         digest,
@@ -214,39 +237,37 @@ def _object_location(
     )
 
 
-def _previous_object_location(
+def _object_candidates(
     client,
     bucket: str,
     key: str,
     version_id: str | None,
-    active_path: Path | None,
-) -> Path | None:
+) -> tuple[Path | None, tuple[tuple[Path, bool, bool], ...], str, int]:
     shard_map, previous_map = _refresh_maps()
-    if not shard_map or not previous_map:
-        return None
-    shard, digest = shard_for_resource(
-        bucket,
-        key,
-        len(shard_map),
-        version_id,
-        _endpoint_scope(client),
+    if not shard_map:
+        return None, (), "", 0
+    shard_count = len(shard_map)
+    active_paths, digest, shard = _paths_for_map(
+        client, bucket, key, version_id, shard_map, shard_count
     )
-    mount_path = previous_map.get(str(shard))
-    if not mount_path:
-        return None
-    previous_path = Path(
-        cache_path(
-            mount_path, CACHE_DIR_NAME, shard, _region(client), bucket, digest
-        )
+    previous_paths, _, _ = _paths_for_map(
+        client, bucket, key, version_id, previous_map, shard_count
     )
-    if active_path == previous_path:
-        return None
-    try:
-        if os.stat(mount_path).st_dev == os.stat("/").st_dev:
-            return None
-    except OSError:
-        return None
-    return previous_path
+    write_path = active_paths[0] if active_paths else None
+    ordered = (
+        (active_paths[0] if active_paths else None, False, False),
+        (previous_paths[0] if previous_paths else None, True, False),
+        (active_paths[1] if len(active_paths) > 1 else None, False, True),
+        (previous_paths[1] if len(previous_paths) > 1 else None, True, True),
+    )
+    seen: set[Path] = set()
+    candidates: list[tuple[Path, bool, bool]] = []
+    for path, previous_owner, compatibility_layout in ordered:
+        if path is None or path in seen:
+            continue
+        seen.add(path)
+        candidates.append((path, previous_owner, compatibility_layout))
+    return write_path, tuple(candidates), digest, shard
 
 
 def _touch_access_time(path: Path) -> None:
@@ -283,17 +304,31 @@ def _touch_access_time(path: Path) -> None:
 
 
 def _ensure_cache_parent(path: Path) -> None:
-    """Create cache directories using the configured shared access policy."""
-    directories: list[Path] = []
-    current = path.parent
-    while current.name != CACHE_DIR_NAME:
-        if current == current.parent:
-            raise OSError(f"cache path is not below {CACHE_DIR_NAME!r}: {path}")
-        directories.append(current)
-        current = current.parent
+    """Create cache directories without following key-controlled symlinks."""
+    try:
+        cache_index = path.parts.index(CACHE_DIR_NAME)
+    except ValueError as exc:
+        raise OSError(f"cache path is not below {CACHE_DIR_NAME!r}: {path}") from exc
+    cache_root = Path(*path.parts[: cache_index + 1])
+    if cache_root.is_symlink() or not cache_root.is_dir():
+        raise OSError(f"unsafe cache root: {cache_root}")
 
-    for directory in reversed(directories):
-        directory.mkdir(mode=CACHE_DIRECTORY_MODE, exist_ok=True)
+    try:
+        relative_parent = path.parent.relative_to(cache_root)
+    except ValueError as exc:
+        raise OSError(f"cache path escaped {cache_root}: {path}") from exc
+
+    directory = cache_root
+    for component in relative_parent.parts:
+        if component in {"", ".", ".."}:
+            raise OSError(f"unsafe cache path component: {component!r}")
+        directory /= component
+        try:
+            directory.mkdir(mode=CACHE_DIRECTORY_MODE)
+        except FileExistsError:
+            pass
+        if directory.is_symlink() or not directory.is_dir():
+            raise OSError(f"unsafe cache directory: {directory}")
         # mkdir honors the workload umask. Correct it so root-squashed NFS
         # clients with the configured access identity can populate the cache.
         directory.chmod(CACHE_DIRECTORY_MODE)
@@ -595,6 +630,7 @@ def _cached_response(
     digest: str,
     shard: int,
     previous_owner: bool = False,
+    compatibility_layout: bool = False,
 ) -> dict:
     stat_result = path.stat()
     size = stat_result.st_size
@@ -611,6 +647,8 @@ def _cached_response(
         length = size
         status = 200
         reason = "HIT_PREVIOUS" if previous_owner else "HIT"
+    if compatibility_layout:
+        reason = f"{reason}_COMPAT"
     response = {
         **metadata,
         "Body": CachedBody(stream, length),
@@ -679,17 +717,14 @@ def _patched_call(client, operation_name: str, kwargs: dict):
     resource = f"s3://{bucket}/{key}"
     if version_id is not None:
         resource = f"{resource}?versionId={version_id}"
-    path, digest, shard = _object_location(client, bucket, key, version_id)
-    previous_path = _previous_object_location(
-        client, bucket, key, version_id, path
+    path, candidates, digest, shard = _object_candidates(
+        client, bucket, key, version_id
     )
-    if path is None and previous_path is None:
+    if not candidates:
         _log(ERROR_FILE, resource, "MISS_MOUNT_NA", digest, shard)
         return _ORIGINAL_CALL(client, operation_name, kwargs)
 
-    for candidate, previous_owner in ((path, False), (previous_path, True)):
-        if candidate is None:
-            continue
+    for candidate, previous_owner, compatibility_layout in candidates:
         try:
             if candidate.exists():
                 fresh = time.time() - _freshness_mtime(candidate) <= MAX_CACHE_AGE
@@ -701,6 +736,7 @@ def _patched_call(client, operation_name: str, kwargs: dict):
                         digest,
                         shard,
                         previous_owner=previous_owner,
+                        compatibility_layout=compatibility_layout,
                     )
         except (OSError, ValueError):
             continue

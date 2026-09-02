@@ -301,6 +301,7 @@ variableGroups:
     - quickcache_max_cache_age
     - quickcache_map_reload_interval
     - quickcache_cache_range_gets
+    - quickcache_cache_path_layout
     - quickcache_cleanup_high_watermark
     - quickcache_cleanup_target_watermark
     - quickcache_max_cache_files
@@ -1424,6 +1425,18 @@ variables:
     description: A cold range request downloads and caches the complete object before returning the requested range.
     type: boolean
     default: true
+    visible:
+      and:
+        - ${install_quickcache}
+        - ${quickcache_advanced_options}
+  quickcache_cache_path_layout:
+    title: QuickCache on-disk object layout
+    description: friendly stores safely encoded, recognizable bucket/object-key paths under v2 and reads legacy hashed entries; hashed keeps the original OKE write layout while still reading friendly entries.
+    type: enum
+    enum:
+      - friendly
+      - hashed
+    default: friendly
     visible:
       and:
         - ${install_quickcache}

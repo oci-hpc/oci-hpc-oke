@@ -19,14 +19,19 @@ func TestQuickCacheNeverFormatsStorage(t *testing.T) {
 	require.Contains(t, hostSetup, "Refusing to use the root filesystem")
 }
 
-func TestQuickCacheRuntimeDoesNotUseRawObjectKeysAsPaths(t *testing.T) {
+func TestQuickCacheRuntimeSafelyEncodesFriendlyObjectPaths(t *testing.T) {
 	sitecustomize := readRepositoryFile(t, "terraform", "files", "oci-quickcache", "files", "sitecustomize.py")
 	cachePaths := readRepositoryFile(t, "terraform", "files", "oci-quickcache", "files", "cache_paths.py")
 
 	require.Contains(t, cachePaths, "resource_hash")
 	require.Contains(t, cachePaths, "digest[:2]")
 	require.NotContains(t, cachePaths, "os.path.dirname(key)")
-	require.Contains(t, sitecustomize, "cache_path(")
+	require.Contains(t, cachePaths, "_encoded_component")
+	require.Contains(t, cachePaths, `return "%2E%2E"`)
+	require.Contains(t, cachePaths, "MAX_CACHE_PATH_LENGTH")
+	require.Contains(t, cachePaths, ".__qc_")
+	require.Contains(t, sitecustomize, "cache_path_candidates(")
+	require.Contains(t, sitecustomize, "directory.is_symlink()")
 }
 
 func TestQuickCacheUsesControllerOwnedDynamicState(t *testing.T) {

@@ -14,6 +14,12 @@ checksum behavior for the OCI Object Storage S3 Compatibility API.
 
 The Secret is an example only. Do not commit real customer credentials.
 
+With the default `friendly` cache path layout, successful misses write safely
+encoded, recognizable bucket/object-key paths under each shard's `v2`
+directory. The filename ends in `.__qc_<24 hex characters>` to distinguish
+endpoint and version identities. Existing hash-only OKE entries remain
+readable and are logged as compatibility-layout hits.
+
 ## Multi-node benchmark
 
 Use a multi-GiB immutable object that is safe to read repeatedly. A single key
