@@ -140,6 +140,20 @@ var validationTestCases = []validationTestCase{
 		expectedError: "requires nvme_raid_enabled=true",
 	},
 	{
+		// OCI Resource Manager serializes a single allowMultiple enum choice as
+		// a scalar. This must reach the normal QuickCache validation path rather
+		// than fail while Terraform parses a set(string) environment variable.
+		name: "QuickCacheResourceManagerScalarServerPool",
+		vars: map[string]interface{}{
+			"install_quickcache":      true,
+			"nvme_raid_enabled":       false,
+			"worker_cpu_enabled":      true,
+			"worker_cpu_shape":        "VM.DenseIO.E5.Flex",
+			"quickcache_worker_pools": "oke-cpu",
+		},
+		expectedError: "requires nvme_raid_enabled=true",
+	},
+	{
 		name: "QuickCacheCleanupWatermarks",
 		vars: map[string]interface{}{
 			"install_quickcache":                  true,
@@ -184,6 +198,17 @@ var validationTestCases = []validationTestCase{
 			"worker_gpu_enabled":             true,
 			"quickcache_worker_pools":        []string{"oke-gpu"},
 			"quickcache_client_worker_pools": []string{"oke-gpu"},
+		},
+		expectedError: "server and client worker pools must not overlap",
+	},
+	{
+		name: "QuickCacheResourceManagerScalarPoolOverlap",
+		vars: map[string]interface{}{
+			"install_quickcache":             true,
+			"worker_cpu_enabled":             true,
+			"worker_cpu_shape":               "VM.DenseIO.E5.Flex",
+			"quickcache_worker_pools":        "oke-cpu",
+			"quickcache_client_worker_pools": "oke-cpu",
 		},
 		expectedError: "server and client worker pools must not overlap",
 	},

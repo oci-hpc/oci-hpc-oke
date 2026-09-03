@@ -2,15 +2,31 @@
 # Licensed under the Universal Permissive License v 1.0 as shown at https://oss.oracle.com/licenses/upl
 
 locals {
+  # Resource Manager stores a one-item allowMultiple enum as a plain scalar
+  # (for example, "oke-cpu"), while native Terraform callers use a collection.
+  # Normalize both forms here and also tolerate comma-separated or JSON-array
+  # strings so the provider boundary does not leak into the placement logic.
+  quickcache_worker_pools_requested = try(
+    toset([for pool in var.quickcache_worker_pools : trimspace(tostring(pool)) if trimspace(tostring(pool)) != ""]),
+    toset([for pool in jsondecode(tostring(var.quickcache_worker_pools)) : trimspace(tostring(pool)) if trimspace(tostring(pool)) != ""]),
+    toset(compact([for pool in split(",", tostring(var.quickcache_worker_pools)) : trimspace(pool)])),
+    toset([]),
+  )
+  quickcache_client_worker_pools_requested = try(
+    toset([for pool in var.quickcache_client_worker_pools : trimspace(tostring(pool)) if trimspace(tostring(pool)) != ""]),
+    toset([for pool in jsondecode(tostring(var.quickcache_client_worker_pools)) : trimspace(tostring(pool)) if trimspace(tostring(pool)) != ""]),
+    toset(compact([for pool in split(",", tostring(var.quickcache_client_worker_pools)) : trimspace(pool)])),
+    toset([]),
+  )
   quickcache_auto_worker_pools = compact([
     var.worker_gpu_enabled ? "oke-gpu" : "",
     var.worker_rdma_enabled ? "oke-rdma" : "",
     var.worker_gmc_enabled ? "oke-gmc" : "",
   ])
   quickcache_worker_pools_effective = sort(tolist(
-    length(var.quickcache_worker_pools) > 0 ? var.quickcache_worker_pools : toset(local.quickcache_auto_worker_pools)
+    length(local.quickcache_worker_pools_requested) > 0 ? local.quickcache_worker_pools_requested : toset(local.quickcache_auto_worker_pools)
   ))
-  quickcache_client_worker_pools_effective = sort(tolist(var.quickcache_client_worker_pools))
+  quickcache_client_worker_pools_effective = sort(tolist(local.quickcache_client_worker_pools_requested))
   quickcache_available_worker_pools = toset(compact([
     var.worker_cpu_enabled ? "oke-cpu" : "",
     var.worker_gpu_enabled ? "oke-gpu" : "",

@@ -86,6 +86,8 @@ func TestQuickCacheRetainsFullMapBackupsAndEstimatesManualMigration(t *testing.T
 
 func TestQuickCacheResourceManagerWorkerPoolsAreSelectable(t *testing.T) {
 	schema := readRepositoryFile(t, "terraform", "schema.yaml")
+	variables := readRepositoryFile(t, "terraform", "variables.tf")
+	quickcache := readRepositoryFile(t, "terraform", "quickcache.tf")
 	start := strings.Index(schema, "  quickcache_worker_pools:")
 	require.NotEqual(t, -1, start)
 	endOffset := strings.Index(schema[start:], "\n  quickcache_virtual_shards:")
@@ -93,11 +95,17 @@ func TestQuickCacheResourceManagerWorkerPoolsAreSelectable(t *testing.T) {
 	workerPools := schema[start : start+endOffset]
 
 	require.Contains(t, workerPools, "type: enum")
-	// Resource Manager requires allowMultiple under additionalProps. Keeping it
-	// at the enum's top level makes ORM serialize a single selection as a scalar,
-	// which Terraform cannot parse for the set(string) variables.
+	// Resource Manager requires allowMultiple under additionalProps, but it can
+	// still serialize a single selection as a scalar. The Terraform boundary
+	// therefore accepts both scalar and collection forms and normalizes them.
 	require.Equal(t, 2, strings.Count(workerPools, "    additionalProps:\n      allowMultiple: true"))
 	require.NotContains(t, workerPools, "\n    allowMultiple: true")
+	require.NotContains(t, variables, "variable \"quickcache_worker_pools\" {\n  default     = []\n  type        = set(string)")
+	require.NotContains(t, variables, "variable \"quickcache_client_worker_pools\" {\n  default     = []\n  type        = set(string)")
+	require.Contains(t, quickcache, "quickcache_worker_pools_requested = try(")
+	require.Contains(t, quickcache, "quickcache_client_worker_pools_requested = try(")
+	require.Contains(t, quickcache, "jsondecode(tostring(var.quickcache_worker_pools))")
+	require.Contains(t, quickcache, "split(\",\", tostring(var.quickcache_worker_pools))")
 	for _, pool := range []string{"oke-gpu", "oke-rdma", "oke-gmc", "oke-cpu"} {
 		require.Contains(t, workerPools, "- "+pool)
 	}

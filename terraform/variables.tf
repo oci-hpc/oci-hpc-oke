@@ -304,30 +304,14 @@ variable "quickcache_advanced_options" {
 
 variable "quickcache_worker_pools" {
   default     = []
-  type        = set(string)
   nullable    = false
-  description = "Worker pool names that host QuickCache. Empty automatically selects enabled GPU, RDMA, and GMC pools."
-
-  validation {
-    condition = alltrue([
-      for pool in var.quickcache_worker_pools : contains(["oke-cpu", "oke-gpu", "oke-rdma", "oke-gmc"], pool)
-    ])
-    error_message = "quickcache_worker_pools may contain only oke-cpu, oke-gpu, oke-rdma, and oke-gmc."
-  }
+  description = "Worker pool names that host QuickCache. Accepts a Terraform collection or the scalar/comma-separated representation emitted by OCI Resource Manager. Empty automatically selects enabled GPU, RDMA, and GMC pools."
 }
 
 variable "quickcache_client_worker_pools" {
   default     = []
-  type        = set(string)
   nullable    = false
-  description = "Optional worker pools that consume dedicated QuickCache servers without owning cache shards. These pools must not overlap quickcache_worker_pools."
-
-  validation {
-    condition = alltrue([
-      for pool in var.quickcache_client_worker_pools : contains(["oke-cpu", "oke-gpu", "oke-rdma", "oke-gmc"], pool)
-    ])
-    error_message = "quickcache_client_worker_pools may contain only oke-cpu, oke-gpu, oke-rdma, and oke-gmc."
-  }
+  description = "Optional worker pools that consume dedicated QuickCache servers without owning cache shards. Accepts a Terraform collection or the scalar/comma-separated representation emitted by OCI Resource Manager. These pools must not overlap quickcache_worker_pools."
 }
 
 variable "quickcache_access_mode" {
